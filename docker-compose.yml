@@ -1,4 +1,4 @@
 services:
   hello:
     image: alpine:3.21
-    command: ["sh", "-c", "echo 'aia-jail docker access: OK' && sleep infinity"]
+    command: ["sh", "-c", "echo 'pi-jail docker access: OK' && sleep infinity"]

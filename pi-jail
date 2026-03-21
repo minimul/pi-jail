@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eo pipefail
 
-IMAGE_NAME="aia-standalone"
+IMAGE_NAME="pi-standalone"
 SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
 SHELL_MODE=false
@@ -11,7 +11,7 @@ PASSTHROUGH_ARGS=()
 # ============================================
 # Custom apt packages to install (space-separated)
 # Modify this line to add your own packages
-CUSTOM_APT_PACKAGES="jq dnsutils openssh-client ripgrep fzf"
+CUSTOM_APT_PACKAGES="jq dnsutils openssh-client ripgrep fzf git"
 # ============================================
 
 # Parse command line arguments
@@ -30,10 +30,10 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -r,  --rebuild       Force rebuild of the Docker image"
-            echo "  -s,  --shell         Start a bash shell instead of aia"
+            echo "  -s,  --shell         Start a bash shell instead of pi"
             echo "  -h,  --help          Show this help message"
             echo ""
-            echo "Arguments after -- are passed through to aia."
+            echo "Arguments after -- are passed through to pi."
             echo ""
             echo "Environment variables for AI providers (passed to container):"
             echo "  ANTHROPIC_API_KEY    Anthropic API key"
@@ -54,12 +54,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Create aia data directories
-aia_prompts="$HOME/.prompts"
-aia_config="$HOME/.config/aia"
+# Create pi data directories
+pi_config="$HOME/.pi/agent"
 opencode_data="$HOME/.local/share/opencode"
-mkdir -p "$aia_prompts"
-mkdir -p "$aia_config"
+mkdir -p "$pi_config"
 mkdir -p "$opencode_data"
 
 # Compute hash of this script to detect changes
@@ -83,19 +81,12 @@ else
 fi
 
 if [ "$NEEDS_BUILD" = true ]; then
-    DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || true
-    if [ -z "$DOCKER_GID" ]; then
-        echo "Failed to determine docker group ID from /var/run/docker.sock"
-        exit 1
-    fi
     docker build \
-      --build-arg DOCKER_GID="$DOCKER_GID" \
       --build-arg CUSTOM_APT_PACKAGES="$CUSTOM_APT_PACKAGES" \
       --label "script.hash=$SCRIPT_HASH" \
       -t "$IMAGE_NAME" - <<'DOCKERFILE'
-FROM ruby:3.3-bookworm
+FROM node:lts-bookworm
 
-ARG DOCKER_GID
 ARG CUSTOM_APT_PACKAGES
 
 # Install system dependencies, Docker CLI, and custom packages
@@ -121,25 +112,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install aia and debug_me gems globally
-RUN gem install aia debug_me
-
-# Create non-root user for running aia
-RUN useradd -m -s /bin/bash aia
-
-# Add user to docker group for docker access (handle GID collision)
-RUN if getent group ${DOCKER_GID} >/dev/null 2>&1; then \
-        EXISTING_GROUP=$(getent group ${DOCKER_GID} | cut -d: -f1); \
-        usermod -aG "$EXISTING_GROUP" aia; \
-    else \
-        groupadd -g ${DOCKER_GID} docker && usermod -aG docker aia; \
-    fi
-
-# Switch to non-root user
-USER aia
+# Install pi coding agent globally
+RUN npm install -g @mariozechner/pi-coding-agent
 
 WORKDIR /workspace
-CMD ["aia"]
+CMD ["pi"]
 DOCKERFILE
 fi
 
@@ -153,31 +130,36 @@ if [[ -z "${OPEN_ROUTER_API_KEY:-}" && -f "$OPENCODE_AUTH_JSON" ]]; then
     fi
 fi
 
-# ruby_llm expects OPENROUTER_API_KEY (no extra underscore) — map from OPEN_ROUTER_API_KEY
-if [[ -n "${OPEN_ROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
-    OPENROUTER_API_KEY="$OPEN_ROUTER_API_KEY"
-    export OPENROUTER_API_KEY
+# Determine docker group ID for socket access
+DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || true
+if [ -z "$DOCKER_GID" ]; then
+    echo "Failed to determine docker group ID from /var/run/docker.sock"
+    exit 1
 fi
 
-# Build the docker run command
-# Mount the actual host path to the same path inside the container
-# This is required for docker-compose to work correctly with volume mounts
+# Build the docker run command.
+# Run as the host user's UID:GID so that all mounted host directories are
+# writable without any ownership mismatch. The docker GID is added as a
+# supplemental group so the container can access /var/run/docker.sock.
+# HOME is set explicitly because there is no /etc/passwd entry for an
+# arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
 HOST_PWD="$(pwd)"
 DOCKER_ARGS=(
   -it --rm
   --label "hostdir=$HOST_PWD"
+  -u "$(id -u):$(id -g)"
+  --group-add "$DOCKER_GID"
   -v "$HOST_PWD:$HOST_PWD"
-  -v "$aia_prompts:/home/aia/.prompts"
-  -v "$aia_config:/home/aia/.config/aia"
-  -v "$opencode_data:/home/aia/.local/share/opencode"
+  -v "$pi_config:$pi_config"
+  -v "$opencode_data:$opencode_data"
   -v "/var/run/docker.sock:/var/run/docker.sock"
   -w "$HOST_PWD"
+  -e HOME="$HOME"
   -e ANTHROPIC_API_KEY
   -e OPENAI_API_KEY
   -e GOOGLE_API_KEY
   -e OPEN_ROUTER_API_KEY
   -e OPENROUTER_API_KEY
-  -e AIA_PROMPTS_DIR=/home/aia/.prompts
 )
 
 if [ "$SHELL_MODE" = true ]; then
@@ -185,10 +167,10 @@ if [ "$SHELL_MODE" = true ]; then
     if [ -n "$EXISTING" ]; then
         exec docker exec -it "$EXISTING" bash
     else
-        exec docker run "${DOCKER_ARGS[@]}" -u root "$IMAGE_NAME" bash
+        exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash
     fi
 elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
-    exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" aia "${PASSTHROUGH_ARGS[@]}"
+    exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}"
 else
     exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME"
 fi

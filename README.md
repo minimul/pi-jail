@@ -1,10 +1,10 @@
-# aia-jail
+# pi-jail
 
-A single-file Bash launcher that runs the [`aia`](https://github.com/MadBomber/aia) AI assistant CLI inside a Docker sandbox. Ruby and all gem dependencies stay off your host machine, and `aia` only has access to the directory from which `aia-jail` is launched — plus any Docker containers defined within that same directory.
+A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@mariozechner/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` only has access to the directory from which `pi-jail` is launched — plus any Docker containers defined within that same directory.
 
 ## How it works
 
-On first run, `aia-jail` builds a Docker image from an embedded Dockerfile (Ruby 3.3 on Debian Bookworm with `aia` and common CLI tools pre-installed). Subsequent runs reuse the image. If you edit the script — for example to add packages — the image is automatically rebuilt via `md5sum` change detection.
+On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi` and common CLI tools pre-installed). Subsequent runs reuse the image. If you edit the script — for example to add packages — the image is automatically rebuilt via `md5sum` change detection.
 
 ## Prerequisites
 
@@ -13,40 +13,40 @@ On first run, `aia-jail` builds a Docker image from an embedded Dockerfile (Ruby
 
 ## Installation
 
-Copy the script to somewhere on your `$PATH` and make it executable:
+Copy the `pi-jail` script to somewhere on your `$PATH` and make it executable:
 
 ```bash
-cp aia-jail ~/.local/bin/aia-jail
-chmod +x ~/.local/bin/aia-jail
+cp pi-jail ~/.local/bin/pi-jail
+chmod +x ~/.local/bin/pi-jail
 ```
 
 ## Usage
 
 ```
-aia-jail [OPTIONS] [-- ARGS...]
+pi-jail [OPTIONS] [-- ARGS...]
 
 Options:
   -r, --rebuild    Force rebuild of the Docker image
-  -s, --shell      Start a bash shell instead of aia
+  -s, --shell      Start a bash shell instead of pi
   -h, --help       Show this help message
 
-Arguments after -- are passed through to aia.
+Arguments after -- are passed through to pi.
 ```
 
 ### Examples
 
 ```bash
-# Run aia interactively (builds image on first run)
-aia-jail -- --chat
+# Run pi interactively (builds the image on first run)
+pi-jail
 
-# Pass arguments directly to aia
-aia-jail -- --model claude-3-5-sonnet "Tell me a joke"
+# Pass arguments directly to pi
+pi-jail -- -p "Summarize this codebase"
 
 # Open a shell inside the container
-aia-jail --shell
+pi-jail --shell
 
 # Force a full image rebuild
-aia-jail --rebuild
+pi-jail --rebuild
 ```
 
 If `--shell` is used while a container from the same working directory is already running, the script `docker exec`s into it rather than starting a new one.
@@ -78,42 +78,40 @@ Save the file and the image will rebuild automatically on the next run.
 
 ## Volume mounts
 
-The following host paths are mounted into every container:
-
 | Host | Container | Purpose |
 |---|---|---|
 | `$(pwd)` | same path | Current working directory (path-mirrored for Docker-in-Docker compatibility) |
-| `~/.prompts` | `/home/aia/.prompts` | aia prompt files |
-| `~/.config/aia` | `/home/aia/.config/aia` | aia configuration |
-| `~/.local/share/opencode` | `/home/aia/.local/share/opencode` | OpenCode data and auth |
+| `~/.pi/agent` | same path | pi configuration, sessions, extensions, skills |
+| `~/.local/share/opencode` | same path | OpenCode data and auth |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket (enables Docker-in-Docker) |
 
-The current directory is mounted at its exact host path so that any nested `docker` or `docker compose` commands launched from inside `aia` resolve volume paths correctly on the host.
+All host paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
 
 ## Included tools
 
-The Docker image ships with these CLI tools alongside `aia`:
+The Docker image ships with these CLI tools alongside `pi`:
 
 - `ripgrep` — fast file content search
 - `fzf` — fuzzy finder
+- `git` — version control
 - `gh` — GitHub CLI
 - `docker` CLI and `docker compose` plugin
 - `openssh-client`, `dnsutils`, `jq`, `curl`, `build-essential`
 
 ## Testing Docker access
 
-A `docker-compose.yml` is included to verify that `aia-jail` can reach Docker containers defined in the same directory.
+A `docker-compose.yml` is included to verify that `pi-jail` can reach Docker containers defined in the same directory.
 
-From the `aia-jail` directory, start the test service in the background:
+From the `pi-jail` directory, start the test service in the background:
 
 ```bash
 docker compose up -d
 ```
 
-Then open a shell inside the `aia-jail` container from the same directory:
+Then open a shell inside the `pi-jail` container from the same directory:
 
 ```bash
-aia-jail --shell
+pi-jail --shell
 ```
 
 From inside the container, confirm the service is visible and its log output is accessible:
@@ -124,7 +122,7 @@ docker compose ps
 
 # Confirm the success message printed by the container
 docker compose logs hello
-# => hello-1  | aia-jail docker access: OK
+# => hello-1  | pi-jail docker access: OK
 
 # Exec a command directly into the running service
 docker compose exec hello sh -c "echo hello from inside alpine"
@@ -139,4 +137,4 @@ docker compose down
 
 ## License
 
-See [LICENSE](LICENSE) if present, or check the repository for details.
+MIT
