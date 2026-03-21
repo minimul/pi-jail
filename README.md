@@ -1,6 +1,6 @@
 # aia-jail
 
-A single-file Bash launcher that runs the [`aia`](https://github.com/MadBomber/aia) AI assistant CLI inside a Docker sandbox, keeping Ruby and all gem dependencies off your host machine plus commands don't have full access to your host machine either. The aia Docker container does has access to any Docker container that is defined within the directory in which `aia-jail` is launched.
+A single-file Bash launcher that runs the [`aia`](https://github.com/MadBomber/aia) AI assistant CLI inside a Docker sandbox. Ruby and all gem dependencies stay off your host machine, and `aia` only has access to the directory from which `aia-jail` is launched — plus any Docker containers defined within that same directory.
 
 ## How it works
 
