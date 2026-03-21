@@ -55,16 +55,14 @@ If `--shell` is used while a container from the same working directory is alread
 
 ### API keys
 
-Set at least one provider key before running:
+See the `pi` docs for setting up a model subscription.
 
-| Variable | Provider |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
-| `OPENAI_API_KEY` | OpenAI (GPT) |
-| `GOOGLE_API_KEY` | Google (Gemini) |
-| `OPEN_ROUTER_API_KEY` | OpenRouter |
+For OpenRouter do this:
 
-If `OPEN_ROUTER_API_KEY` is not set but `~/.local/share/opencode/auth.json` exists, the key is read from it automatically — so credentials are shared seamlessly with [OpenCode](https://opencode.ai).
+```sh
+echo '{"openrouter":{"type":"api_key","key":"sk-or-..."}}' > ~/.pi/agent/auth.json
+```
+
 
 ### Adding packages
 
