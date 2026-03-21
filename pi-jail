@@ -11,7 +11,7 @@ PASSTHROUGH_ARGS=()
 # ============================================
 # Custom apt packages to install (space-separated)
 # Modify this line to add your own packages
-CUSTOM_APT_PACKAGES="jq dnsutils openssh-client ripgrep fzf git"
+CUSTOM_APT_PACKAGES="jq git"
 # ============================================
 
 # Parse command line arguments
@@ -35,11 +35,6 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Arguments after -- are passed through to pi."
             echo ""
-            echo "Environment variables for AI providers (passed to container):"
-            echo "  ANTHROPIC_API_KEY    Anthropic API key"
-            echo "  OPENAI_API_KEY       OpenAI API key"
-            echo "  GOOGLE_API_KEY       Google API key"
-            echo "  OPEN_ROUTER_API_KEY  OpenRouter API key"
             exit 0
             ;;
         --)
@@ -56,9 +51,7 @@ done
 
 # Create pi data directories
 pi_config="$HOME/.pi/agent"
-opencode_data="$HOME/.local/share/opencode"
 mkdir -p "$pi_config"
-mkdir -p "$opencode_data"
 
 # Compute hash of this script to detect changes
 SCRIPT_HASH=$(md5sum "$SCRIPT_PATH" | cut -d' ' -f1)
@@ -120,16 +113,6 @@ CMD ["pi"]
 DOCKERFILE
 fi
 
-# Pull OPEN_ROUTER_API_KEY from shared OpenCode auth.json if not already set
-OPENCODE_AUTH_JSON="$opencode_data/auth.json"
-if [[ -z "${OPEN_ROUTER_API_KEY:-}" && -f "$OPENCODE_AUTH_JSON" ]]; then
-    _key=$(jq -r '.openrouter.key // empty' "$OPENCODE_AUTH_JSON" 2>/dev/null)
-    if [[ -n "$_key" ]]; then
-        OPEN_ROUTER_API_KEY="$_key"
-        export OPEN_ROUTER_API_KEY
-    fi
-fi
-
 # Determine docker group ID for socket access
 DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || true
 if [ -z "$DOCKER_GID" ]; then
@@ -151,15 +134,9 @@ DOCKER_ARGS=(
   --group-add "$DOCKER_GID"
   -v "$HOST_PWD:$HOST_PWD"
   -v "$pi_config:$pi_config"
-  -v "$opencode_data:$opencode_data"
   -v "/var/run/docker.sock:/var/run/docker.sock"
   -w "$HOST_PWD"
   -e HOME="$HOME"
-  -e ANTHROPIC_API_KEY
-  -e OPENAI_API_KEY
-  -e GOOGLE_API_KEY
-  -e OPEN_ROUTER_API_KEY
-  -e OPENROUTER_API_KEY
 )
 
 if [ "$SHELL_MODE" = true ]; then

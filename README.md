@@ -9,11 +9,10 @@ On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.
 ## Prerequisites
 
 - Docker installed and running
-- `jq` installed on the host (used for OpenRouter key auto-detection)
 
 ## Installation
 
-Copy the `pi-jail` script to somewhere on your `$PATH` and make it executable:
+Copy the script to somewhere on your `$PATH` and make it executable:
 
 ```bash
 cp pi-jail ~/.local/bin/pi-jail
@@ -55,21 +54,24 @@ If `--shell` is used while a container from the same working directory is alread
 
 ### API keys
 
-See the `pi` docs for setting up a model subscription.
+`~/.pi/agent` is mounted into the container at the same path, so credentials written there are available on every run without setting environment variables.
 
-For OpenRouter do this:
+For example, to configure OpenRouter:
 
-```sh
+```bash
+mkdir -p ~/.pi/agent
 echo '{"openrouter":{"type":"api_key","key":"sk-or-..."}}' > ~/.pi/agent/auth.json
+chmod 600 ~/.pi/agent/auth.json
 ```
 
+See the pi docs for [all providers and auth file format](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/providers.md).
 
 ### Adding packages
 
 To install extra packages into the image, edit the `CUSTOM_APT_PACKAGES` variable near the top of the script:
 
 ```bash
-CUSTOM_APT_PACKAGES="git tmux sqlite3"
+CUSTOM_APT_PACKAGES="jq git tmux sqlite3"
 ```
 
 Save the file and the image will rebuild automatically on the next run.
@@ -79,22 +81,20 @@ Save the file and the image will rebuild automatically on the next run.
 | Host | Container | Purpose |
 |---|---|---|
 | `$(pwd)` | same path | Current working directory (path-mirrored for Docker-in-Docker compatibility) |
-| `~/.pi/agent` | same path | pi configuration, sessions, extensions, skills |
-| `~/.local/share/opencode` | same path | OpenCode data and auth |
+| `~/.pi/agent` | same path | pi configuration, sessions, extensions, skills, auth |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket (enables Docker-in-Docker) |
 
-All host paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
+All paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry. The Docker socket GID is added as a supplemental group at runtime via `--group-add`.
 
 ## Included tools
 
 The Docker image ships with these CLI tools alongside `pi`:
 
-- `ripgrep` — fast file content search
-- `fzf` — fuzzy finder
 - `git` — version control
+- `jq` — JSON processor
 - `gh` — GitHub CLI
 - `docker` CLI and `docker compose` plugin
-- `openssh-client`, `dnsutils`, `jq`, `curl`, `build-essential`
+- `curl`, `gnupg`, `build-essential`
 
 ## Testing Docker access
 
