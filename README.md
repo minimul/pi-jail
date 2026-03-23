@@ -2,9 +2,39 @@
 
 A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@mariozechner/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` only has access to the directory from which `pi-jail` is launched — plus any Docker containers defined within that same directory.
 
+## Security model
+
+The pi-jail container is **fully isolated from the host Docker daemon**. Instead of mounting the Docker socket (which grants full host-level access), pi-jail uses **Docker-in-Docker (DinD)** — a completely separate Docker daemon running inside its own container.
+
+### Why DinD instead of docker-socket-proxy?
+
+A Docker socket proxy (e.g. Tecnativa/docker-socket-proxy) filters by API *endpoint category*, but it cannot restrict what happens *within* allowed endpoints. Since `docker compose` requires both the Containers and POST endpoints, a proxy still allows:
+
+- Creating privileged containers that mount the host root filesystem
+- Inspecting environment variables (secrets, API keys) of all host containers
+- Exec-ing into any container on the host
+
+DinD eliminates all of these vectors by giving the pi-jail container its own isolated daemon with its own container/image/network/volume namespace.
+
+### What DinD prevents
+
+| Attack vector | Protected? | How |
+|---|---|---|
+| Mount host filesystem via `docker run -v /:/host` | ✅ | DinD's "host" is its own isolated filesystem |
+| Read secrets from other containers | ✅ | Other containers don't exist in the DinD daemon |
+| Exec into other containers | ✅ | Other containers don't exist in the DinD daemon |
+| Create privileged containers | ✅ | Privileged inside DinD is scoped to DinD, not the real host |
+| Access host Docker socket | ✅ | Socket is never mounted into pi-jail |
+| Tamper with pi credentials | ✅ | `~/.pi/agent` is mounted read-only |
+
+### Trade-offs
+
+- The DinD sidecar requires `--privileged` for its own container (it runs a Docker daemon). This is standard for DinD and does not grant privileges to the pi-jail container.
+- Images pulled inside DinD are stored in the DinD container's filesystem, not the host's image cache. They persist as long as the `pi-jail-dind` container exists.
+
 ## How it works
 
-On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi` and common CLI tools pre-installed). Subsequent runs reuse the image. If you edit the script — for example to add packages — the image is automatically rebuilt via `md5sum` change detection.
+On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi` and common CLI tools pre-installed). It also starts a `pi-jail-dind` sidecar container running an isolated Docker daemon. Subsequent runs reuse both. If you edit the script — for example to add packages — the image is automatically rebuilt via `md5sum` change detection.
 
 ## Prerequisites
 
@@ -54,7 +84,7 @@ If `--shell` is used while a container from the same working directory is alread
 
 ### API keys
 
-`~/.pi/agent` is mounted into the container at the same path, so credentials written there are available on every run without setting environment variables.
+`~/.pi/agent` is mounted into the container as **read-only**, so credentials written there are available on every run without setting environment variables.
 
 For example, to configure OpenRouter:
 
@@ -78,13 +108,29 @@ Save the file and the image will rebuild automatically on the next run.
 
 ## Volume mounts
 
-| Host | Container | Purpose |
-|---|---|---|
-| `$(pwd)` | same path | Current working directory (path-mirrored for Docker-in-Docker compatibility) |
-| `~/.pi/agent` | same path | pi configuration, sessions, extensions, skills, auth |
-| `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket (enables Docker-in-Docker) |
+| Host | Container | Mode | Purpose |
+|---|---|---|---|
+| `$(pwd)` | same path | read-write | Current working directory (path-mirrored for Docker compose compatibility) |
+| `~/.pi/agent` | same path | **read-only** | pi configuration, sessions, extensions, skills, auth |
 
-All paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry. The Docker socket GID is added as a supplemental group at runtime via `--group-add`.
+The Docker socket (`/var/run/docker.sock`) is **not** mounted into the pi-jail container. Docker access is provided via `DOCKER_HOST=tcp://<dind-ip>:2375` pointing to the isolated `pi-jail-dind` sidecar daemon.
+
+All paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
+
+## DinD sidecar management
+
+The DinD daemon runs as a long-lived container named `pi-jail-dind`. It starts automatically on the first `pi-jail` invocation and restarts unless stopped.
+
+```bash
+# Check DinD status
+docker ps --filter name=pi-jail-dind
+
+# Stop the DinD daemon
+docker stop pi-jail-dind
+
+# Remove the DinD daemon (also removes all images/containers inside it)
+docker rm -f pi-jail-dind
+```
 
 ## Included tools
 
@@ -100,21 +146,18 @@ The Docker image ships with these CLI tools alongside `pi`:
 
 A `docker-compose.yml` is included to verify that `pi-jail` can reach Docker containers defined in the same directory.
 
-From the `pi-jail` directory, start the test service in the background:
-
-```bash
-docker compose up -d
-```
-
-Then open a shell inside the `pi-jail` container from the same directory:
+Open a shell inside the `pi-jail` container from the `pi-jail` directory:
 
 ```bash
 pi-jail --shell
 ```
 
-From inside the container, confirm the service is visible and its log output is accessible:
+From inside the container, start the test service and verify access:
 
 ```bash
+# Start the test service
+docker compose up -d
+
 # List running containers — the 'hello' service should appear
 docker compose ps
 
@@ -125,12 +168,27 @@ docker compose logs hello
 # Exec a command directly into the running service
 docker compose exec hello sh -c "echo hello from inside alpine"
 # => hello from inside alpine
+
+# Tear down
+docker compose down
 ```
 
-When done, tear the service down:
+### Verifying isolation
+
+From inside the pi-jail container, confirm that the host is not accessible:
 
 ```bash
-docker compose down
+# No Docker socket — should fail
+ls -la /var/run/docker.sock
+# => ls: cannot access '/var/run/docker.sock': No such file or directory
+
+# Only compose containers visible — no host containers
+docker ps -a
+# => (only your compose services)
+
+# Cannot see host filesystem even through Docker
+docker run --rm -v /:/host alpine cat /host/etc/hostname
+# => (shows DinD hostname, not host machine hostname)
 ```
 
 ## License

@@ -2,6 +2,9 @@
 set -eo pipefail
 
 IMAGE_NAME="pi-standalone"
+DIND_IMAGE="docker:27-dind"
+DIND_CONTAINER_NAME="pi-jail-dind"
+DIND_PORT=2375
 SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
 SHELL_MODE=false
@@ -113,30 +116,74 @@ CMD ["pi"]
 DOCKERFILE
 fi
 
-# Determine docker group ID for socket access
-DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || true
-if [ -z "$DOCKER_GID" ]; then
-    echo "Failed to determine docker group ID from /var/run/docker.sock"
+# ---------------------------------------------------------------------------
+# Docker-in-Docker (DinD): the pi-jail container gets its own completely
+# isolated Docker daemon.  It cannot see host containers, cannot mount the
+# host filesystem, and cannot access the host Docker socket.  The DinD
+# sidecar runs as a separate container and the pi-jail container connects
+# to it over TCP via DOCKER_HOST.
+# ---------------------------------------------------------------------------
+ensure_dind() {
+    # If the DinD container is already running, just return its IP
+    if docker inspect --format '{{.State.Running}}' "$DIND_CONTAINER_NAME" 2>/dev/null | grep -q true; then
+        DIND_IP=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CONTAINER_NAME")
+        return
+    fi
+
+    # Remove stale stopped container if present
+    docker rm -f "$DIND_CONTAINER_NAME" &>/dev/null || true
+
+    echo "Starting Docker-in-Docker daemon ($DIND_CONTAINER_NAME)..."
+    docker run -d --name "$DIND_CONTAINER_NAME" \
+        --privileged \
+        --restart unless-stopped \
+        -e DOCKER_TLS_CERTDIR="" \
+        "$DIND_IMAGE" \
+        dockerd --host=tcp://0.0.0.0:${DIND_PORT} --tls=false >/dev/null
+
+    # Wait for the DinD daemon to be ready (up to 30s)
+    echo -n "Waiting for DinD daemon..."
+    DIND_IP=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CONTAINER_NAME")
+    for i in $(seq 1 60); do
+        if curl -sf "http://${DIND_IP}:${DIND_PORT}/_ping" &>/dev/null; then
+            echo " ready."
+            return
+        fi
+        echo -n "."
+        sleep 0.5
+    done
+
+    echo " FAILED"
+    echo "ERROR: DinD daemon did not become ready in time" >&2
+    docker logs "$DIND_CONTAINER_NAME" 2>&1 | tail -10 >&2
+    exit 1
+}
+
+ensure_dind
+
+if [ -z "$DIND_IP" ]; then
+    echo "ERROR: Could not determine DinD IP" >&2
     exit 1
 fi
 
 # Build the docker run command.
-# Run as the host user's UID:GID so that all mounted host directories are
-# writable without any ownership mismatch. The docker GID is added as a
-# supplemental group so the container can access /var/run/docker.sock.
-# HOME is set explicitly because there is no /etc/passwd entry for an
-# arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
+# - Runs as the host user's UID:GID so that all mounted host directories are
+#   writable without any ownership mismatch.
+# - The host Docker socket is NEVER mounted.  DOCKER_HOST points to the
+#   isolated DinD daemon over TCP.
+# - ~/.pi/agent is mounted read-only; pi only needs to read auth & settings.
+# - HOME is set explicitly because there is no /etc/passwd entry for an
+#   arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
 HOST_PWD="$(pwd)"
 DOCKER_ARGS=(
   -it --rm
   --label "hostdir=$HOST_PWD"
   -u "$(id -u):$(id -g)"
-  --group-add "$DOCKER_GID"
   -v "$HOST_PWD:$HOST_PWD"
-  -v "$pi_config:$pi_config"
-  -v "/var/run/docker.sock:/var/run/docker.sock"
+  -v "$pi_config:$pi_config:ro"
   -w "$HOST_PWD"
   -e HOME="$HOME"
+  -e DOCKER_HOST="tcp://${DIND_IP}:${DIND_PORT}"
 )
 
 if [ "$SHELL_MODE" = true ]; then
