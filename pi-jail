@@ -9,12 +9,13 @@ SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
 SHELL_MODE=false
 PASSTHROUGH_ARGS=()
+ENV_VARS=()
 : "${USER:=$(id -un)}"
 
 # ============================================
 # Custom apt packages to install (space-separated)
 # Modify this line to add your own packages
-CUSTOM_APT_PACKAGES="jq git"
+CUSTOM_APT_PACKAGES="jq git vim"
 # ============================================
 
 # Parse command line arguments
@@ -28,10 +29,19 @@ while [[ $# -gt 0 ]]; do
             SHELL_MODE=true
             shift
             ;;
+        -e|--env)
+            if [ -z "${2:-}" ]; then
+                echo "Error: $1 requires a VALUE (e.g. -e KEY=VALUE)" >&2
+                exit 1
+            fi
+            ENV_VARS+=("$2")
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS] [-- ARGS...]"
             echo ""
             echo "Options:"
+            echo "  -e,  --env KEY=VAL   Pass an environment variable to the container (repeatable)"
             echo "  -r,  --rebuild       Force rebuild of the Docker image"
             echo "  -s,  --shell         Start a bash shell instead of pi"
             echo "  -h,  --help          Show this help message"
@@ -183,8 +193,14 @@ DOCKER_ARGS=(
   -v "$pi_config:$pi_config"
   -w "$HOST_PWD"
   -e HOME="$HOME"
+  -e EDITOR="${EDITOR:-vi}"
   -e DOCKER_HOST="tcp://${DIND_IP}:${DIND_PORT}"
 )
+
+# Append user-supplied environment variables
+for env_var in "${ENV_VARS[@]}"; do
+    DOCKER_ARGS+=(-e "$env_var")
+done
 
 if [ "$SHELL_MODE" = true ]; then
     EXISTING=$(docker ps -q --filter "label=hostdir=$HOST_PWD" --filter "ancestor=$IMAGE_NAME" | head -1)

@@ -55,9 +55,10 @@ chmod +x ~/.local/bin/pi-jail
 pi-jail [OPTIONS] [-- ARGS...]
 
 Options:
-  -r, --rebuild    Force rebuild of the Docker image
-  -s, --shell      Start a bash shell instead of pi
-  -h, --help       Show this help message
+  -e, --env KEY=VAL   Pass an environment variable to the container (repeatable)
+  -r, --rebuild       Force rebuild of the Docker image
+  -s, --shell         Start a bash shell instead of pi
+  -h, --help          Show this help message
 
 Arguments after -- are passed through to pi.
 ```
@@ -70,6 +71,12 @@ pi-jail
 
 # Pass arguments directly to pi
 pi-jail -- -p "Summarize this codebase"
+
+# Pass environment variables into the container
+pi-jail -e ANTHROPIC_API_KEY=sk-ant-... -e MY_VAR=hello
+
+# Combine env vars with pi arguments
+pi-jail -e ANTHROPIC_API_KEY=sk-ant-... -- -p "Summarize this codebase"
 
 # Open a shell inside the container
 pi-jail --shell
