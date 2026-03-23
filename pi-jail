@@ -171,7 +171,7 @@ fi
 #   writable without any ownership mismatch.
 # - The host Docker socket is NEVER mounted.  DOCKER_HOST points to the
 #   isolated DinD daemon over TCP.
-# - ~/.pi/agent is mounted read-only; pi only needs to read auth & settings.
+# - ~/.pi/agent is mounted read-write; pi needs to write sessions, settings
 # - HOME is set explicitly because there is no /etc/passwd entry for an
 #   arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
 HOST_PWD="$(pwd)"
@@ -180,7 +180,7 @@ DOCKER_ARGS=(
   --label "hostdir=$HOST_PWD"
   -u "$(id -u):$(id -g)"
   -v "$HOST_PWD:$HOST_PWD"
-  -v "$pi_config:$pi_config:ro"
+  -v "$pi_config:$pi_config"
   -w "$HOST_PWD"
   -e HOME="$HOME"
   -e DOCKER_HOST="tcp://${DIND_IP}:${DIND_PORT}"

@@ -25,7 +25,7 @@ DinD eliminates all of these vectors by giving the pi-jail container its own iso
 | Exec into other containers | ✅ | Other containers don't exist in the DinD daemon |
 | Create privileged containers | ✅ | Privileged inside DinD is scoped to DinD, not the real host |
 | Access host Docker socket | ✅ | Socket is never mounted into pi-jail |
-| Tamper with pi credentials | ✅ | `~/.pi/agent` is mounted read-only |
+| Tamper with pi credentials | ⚠️ | `~/.pi/agent` is read-write (pi needs to write sessions & locks); protect `auth.json` with `chmod 600` on the host |
 
 ### Trade-offs
 
@@ -84,7 +84,7 @@ If `--shell` is used while a container from the same working directory is alread
 
 ### API keys
 
-`~/.pi/agent` is mounted into the container as **read-only**, so credentials written there are available on every run without setting environment variables.
+`~/.pi/agent` is mounted into the container at the same path, so credentials written there are available on every run without setting environment variables.
 
 For example, to configure OpenRouter:
 
@@ -111,7 +111,7 @@ Save the file and the image will rebuild automatically on the next run.
 | Host | Container | Mode | Purpose |
 |---|---|---|---|
 | `$(pwd)` | same path | read-write | Current working directory (path-mirrored for Docker compose compatibility) |
-| `~/.pi/agent` | same path | **read-only** | pi configuration, sessions, extensions, skills, auth |
+| `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, skills, auth |
 
 The Docker socket (`/var/run/docker.sock`) is **not** mounted into the pi-jail container. Docker access is provided via `DOCKER_HOST=tcp://<dind-ip>:2375` pointing to the isolated `pi-jail-dind` sidecar daemon.
 
