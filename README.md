@@ -4,7 +4,7 @@ A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-
 
 ## Security model
 
-The pi-jail container is **fully isolated from the host Docker daemon**. Instead of mounting the Docker socket (which grants full host-level access), pi-jail uses **Docker-in-Docker (DinD)** — a completely separate Docker daemon running inside its own container.
+The pi-jail container is **fully isolated from the host Docker daemon**. Instead of mounting the Docker socket (which grants full host-level access), pi-jail uses **Docker-in-Docker (DinD)**, a completely separate Docker daemon running inside its own container.
 
 ### Why DinD instead of docker-socket-proxy?
 
