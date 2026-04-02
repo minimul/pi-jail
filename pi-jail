@@ -7,6 +7,7 @@ DIND_CONTAINER_NAME="pi-jail-dind"
 DIND_PORT=2375
 SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
+NO_CACHE=false
 SHELL_MODE=false
 PASSTHROUGH_ARGS=()
 ENV_VARS=()
@@ -23,6 +24,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --rebuild|-r)
             FORCE_REBUILD=true
+            shift
+            ;;
+        --no-cache)
+            NO_CACHE=true
             shift
             ;;
         --shell|-s)
@@ -43,6 +48,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -e,  --env KEY=VAL   Pass an environment variable to the container (repeatable)"
             echo "  -r,  --rebuild       Force rebuild of the Docker image"
+            echo "       --no-cache      Rebuild without using Docker cache"
             echo "  -s,  --shell         Start a bash shell instead of pi"
             echo "  -h,  --help          Show this help message"
             echo ""
@@ -87,10 +93,15 @@ else
 fi
 
 if [ "$NEEDS_BUILD" = true ]; then
-    docker build \
-      --build-arg CUSTOM_APT_PACKAGES="$CUSTOM_APT_PACKAGES" \
-      --label "script.hash=$SCRIPT_HASH" \
-      -t "$IMAGE_NAME" - <<'DOCKERFILE'
+    BUILD_ARGS=(
+      --build-arg "CUSTOM_APT_PACKAGES=$CUSTOM_APT_PACKAGES"
+      --label "script.hash=$SCRIPT_HASH"
+      -t "$IMAGE_NAME"
+    )
+    if [ "$NO_CACHE" = true ]; then
+        BUILD_ARGS+=(--no-cache)
+    fi
+    docker build "${BUILD_ARGS[@]}" - <<'DOCKERFILE'
 FROM node:lts-bookworm
 
 ARG CUSTOM_APT_PACKAGES
@@ -146,7 +157,7 @@ ensure_dind() {
     echo "Starting Docker-in-Docker daemon ($DIND_CONTAINER_NAME)..."
     docker run -d --name "$DIND_CONTAINER_NAME" \
         --privileged \
-        --restart unless-stopped \
+        --restart on-failure:10 \
         -e DOCKER_TLS_CERTDIR="" \
         "$DIND_IMAGE" \
         dockerd --host=tcp://0.0.0.0:${DIND_PORT} --tls=false >/dev/null
