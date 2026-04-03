@@ -157,7 +157,6 @@ ensure_dind() {
     echo "Starting Docker-in-Docker daemon ($DIND_CONTAINER_NAME)..."
     docker run -d --name "$DIND_CONTAINER_NAME" \
         --privileged \
-        --restart on-failure:10 \
         -e DOCKER_TLS_CERTDIR="" \
         "$DIND_IMAGE" \
         dockerd --host=tcp://0.0.0.0:${DIND_PORT} --tls=false >/dev/null
