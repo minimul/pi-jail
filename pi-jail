@@ -3,8 +3,11 @@ set -eo pipefail
 
 IMAGE_NAME="pi-standalone"
 DIND_IMAGE="docker:27-dind"
-DIND_CONTAINER_NAME="pi-jail-dind"
 DIND_PORT=2375
+HOST_PWD="$(pwd)"
+_DIR_HASH="$(echo "$HOST_PWD" | md5sum | cut -c1-12)"
+DIND_CONTAINER_NAME="pi-jail-dind-${_DIR_HASH}"
+DIND_NETWORK_NAME="pi-jail-net-${_DIR_HASH}"
 SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
 NO_CACHE=false
@@ -80,7 +83,7 @@ NEEDS_BUILD=false
 if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     echo "Image '$IMAGE_NAME' not found. Building..."
     NEEDS_BUILD=true
-elif [ "$FORCE_REBUILD" = true ]; then
+elif [ "$FORCE_REBUILD" = true ] || [ "$NO_CACHE" = true ]; then
     echo "Forcing rebuild of '$IMAGE_NAME'..."
     NEEDS_BUILD=true
 else
@@ -142,12 +145,25 @@ fi
 # isolated Docker daemon.  It cannot see host containers, cannot mount the
 # host filesystem, and cannot access the host Docker socket.  The DinD
 # sidecar runs as a separate container and the pi-jail container connects
-# to it over TCP via DOCKER_HOST.
+# to it over TCP via DOCKER_HOST on a dedicated private network.
+# DinD resources are scoped per launch directory via a directory hash so
+# concurrent sessions in different directories are fully isolated.
 # ---------------------------------------------------------------------------
+
+# Ensure the dedicated bridge network exists (isolated from the default bridge)
+ensure_dind_network() {
+    if ! docker network inspect "$DIND_NETWORK_NAME" &>/dev/null; then
+        echo "Creating isolated network '$DIND_NETWORK_NAME'..."
+        docker network create --driver bridge "$DIND_NETWORK_NAME" >/dev/null
+    fi
+}
+
 ensure_dind() {
-    # If the DinD container is already running, just return its IP
+    ensure_dind_network
+
+    # If the DinD container is already running, just return its IP on the private network
     if docker inspect --format '{{.State.Running}}' "$DIND_CONTAINER_NAME" 2>/dev/null | grep -q true; then
-        DIND_IP=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CONTAINER_NAME")
+        DIND_IP=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$DIND_NETWORK_NAME\").IPAddress}}" "$DIND_CONTAINER_NAME")
         return
     fi
 
@@ -156,16 +172,19 @@ ensure_dind() {
 
     echo "Starting Docker-in-Docker daemon ($DIND_CONTAINER_NAME)..."
     docker run -d --name "$DIND_CONTAINER_NAME" \
+        --network "$DIND_NETWORK_NAME" \
         --privileged \
+        -v "$HOST_PWD:$HOST_PWD" \
         -e DOCKER_TLS_CERTDIR="" \
         "$DIND_IMAGE" \
         dockerd --host=tcp://0.0.0.0:${DIND_PORT} --tls=false >/dev/null
 
     # Wait for the DinD daemon to be ready (up to 30s)
     echo -n "Waiting for DinD daemon..."
-    DIND_IP=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_CONTAINER_NAME")
+    DIND_IP=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$DIND_NETWORK_NAME\").IPAddress}}" "$DIND_CONTAINER_NAME")
     for i in $(seq 1 60); do
-        if curl -sf "http://${DIND_IP}:${DIND_PORT}/_ping" &>/dev/null; then
+        if docker exec "$DIND_CONTAINER_NAME" \
+               wget -qO- "http://127.0.0.1:${DIND_PORT}/_ping" &>/dev/null; then
             echo " ready."
             return
         fi
@@ -179,6 +198,14 @@ ensure_dind() {
     exit 1
 }
 
+# Stop and remove the DinD sidecar and network when the pi container exits
+cleanup_dind() {
+    echo "Stopping DinD sidecar..."
+    docker rm -f "$DIND_CONTAINER_NAME" &>/dev/null || true
+    docker network rm "$DIND_NETWORK_NAME" &>/dev/null || true
+}
+trap cleanup_dind EXIT
+
 ensure_dind
 
 if [ -z "$DIND_IP" ]; then
@@ -191,12 +218,12 @@ fi
 #   writable without any ownership mismatch.
 # - The host Docker socket is NEVER mounted.  DOCKER_HOST points to the
 #   isolated DinD daemon over TCP.
-# - ~/.pi/agent is mounted read-write; pi needs to write sessions, settings
+# - ~/.pi/agent is mounted read-write; pi needs to write sessions, settings.
 # - HOME is set explicitly because there is no /etc/passwd entry for an
 #   arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
-HOST_PWD="$(pwd)"
 DOCKER_ARGS=(
   -it --rm
+  --network "$DIND_NETWORK_NAME"
   --label "hostdir=$HOST_PWD"
   -u "$(id -u):$(id -g)"
   -v "$HOST_PWD:$HOST_PWD"
@@ -212,15 +239,20 @@ for env_var in "${ENV_VARS[@]}"; do
     DOCKER_ARGS+=(-e "$env_var")
 done
 
+# Run the container (no exec — let the EXIT trap fire for cleanup)
+set +e
 if [ "$SHELL_MODE" = true ]; then
     EXISTING=$(docker ps -q --filter "label=hostdir=$HOST_PWD" --filter "ancestor=$IMAGE_NAME" | head -1)
     if [ -n "$EXISTING" ]; then
+        # Attaching to an already-running container — don't tear down DinD on exit
+        trap - EXIT
         exec docker exec -it "$EXISTING" bash
     else
-        exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash
+        docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash
     fi
 elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
-    exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}"
+    docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}"
 else
-    exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME"
+    docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME"
 fi
+exit $?

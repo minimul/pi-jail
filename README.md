@@ -151,7 +151,10 @@ The Docker image ships with these CLI tools alongside `pi`:
 
 ## Testing Docker access
 
-A `docker-compose.yml` is included to verify that `pi-jail` can reach Docker containers defined in the same directory.
+A `docker-compose.yml` is included to verify that `pi-jail` can reach Docker containers defined in the same directory. It runs two automated tests:
+
+1. **Volume mount** — confirms that `docker-compose.yml` is visible inside the container via the workspace volume mount.
+2. **Service networking** — confirms that the `docker-access-test` container can reach the `test-web` service over the compose network.
 
 Open a shell inside the `pi-jail` container from the `pi-jail` directory:
 
@@ -159,24 +162,27 @@ Open a shell inside the `pi-jail` container from the `pi-jail` directory:
 pi-jail --shell
 ```
 
-From inside the container, start the test service and verify access:
+From inside the container, run the tests:
 
 ```bash
-# Start the test service
-docker compose up -d
+docker compose up --abort-on-container-exit --exit-code-from docker-access-test
+```
 
-# List running containers — the 'hello' service should appear
-docker compose ps
+Expected output:
 
-# Confirm the success message printed by the container
-docker compose logs hello
-# => hello-1  | pi-jail docker access: OK
+```
+=== DinD Docker Compose Test ===
 
-# Exec a command directly into the running service
-docker compose exec hello sh -c "echo hello from inside alpine"
-# => hello from inside alpine
+--- Test 1: Volume mount (project files visible) ---
+[PASS] docker-compose.yml found via volume mount
 
-# Tear down
+--- Test 2: Compose service networking ---
+[PASS] Got response from test-web: OK
+```
+
+Both services exit cleanly when all tests pass. Tear down afterward:
+
+```bash
 docker compose down
 ```
 
