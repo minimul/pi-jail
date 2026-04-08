@@ -1,0 +1,15 @@
+services:
+  # Simple web service that responds on port 8080
+  test-web:
+    image: alpine:3.19
+    container_name: jail-test-web
+    command:
+      - sh
+      - -c
+      - |
+        echo 'Web server running' &&
+        while true; do
+          echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK' | nc -l -p 8080
+        done
+    ports:
+      - "8080:8080"
