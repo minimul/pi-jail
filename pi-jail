@@ -1,19 +1,15 @@
 #!/bin/bash
 set -eo pipefail
 
-IMAGE_NAME="pi-standalone"
-DIND_IMAGE="docker:27-dind"
-DIND_PORT=2375
+IMAGE_NAME="pi-jail"
 HOST_PWD="$(pwd)"
-_DIR_HASH="$(echo "$HOST_PWD" | md5sum | cut -c1-12)"
-DIND_CONTAINER_NAME="pi-jail-dind-${_DIR_HASH}"
-DIND_NETWORK_NAME="pi-jail-net-${_DIR_HASH}"
 SCRIPT_PATH="$(readlink -f "$0")"
 FORCE_REBUILD=false
 NO_CACHE=false
 SHELL_MODE=false
 PASSTHROUGH_ARGS=()
 ENV_VARS=()
+EXTRA_NETWORKS=()
 : "${USER:=$(id -un)}"
 
 # ============================================
@@ -45,18 +41,44 @@ while [[ $# -gt 0 ]]; do
             ENV_VARS+=("$2")
             shift 2
             ;;
+        -n|--network)
+            if [ -z "${2:-}" ]; then
+                echo "Error: $1 requires a NETWORK name" >&2
+                exit 1
+            fi
+            EXTRA_NETWORKS+=("$2")
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS] [-- ARGS...]"
             echo ""
             echo "Options:"
-            echo "  -e,  --env KEY=VAL   Pass an environment variable to the container (repeatable)"
-            echo "  -r,  --rebuild       Force rebuild of the Docker image"
-            echo "       --no-cache      Rebuild without using Docker cache"
-            echo "  -s,  --shell         Start a bash shell instead of pi"
-            echo "  -h,  --help          Show this help message"
+            echo "  -e,  --env KEY=VAL    Pass an environment variable to the container (repeatable)"
+            echo "  -n,  --network NAME   Attach the jail container to an extra docker network (repeatable)"
+            echo "  -r,  --rebuild        Force rebuild of the Docker image"
+            echo "       --no-cache       Rebuild without using Docker cache"
+            echo "  -s,  --shell          Start a bash shell instead of pi"
+            echo "  -h,  --help           Show this help message"
             echo ""
             echo "Arguments after -- are passed through to pi."
             echo ""
+            echo "Compose-scoped docker access:"
+            echo "  The host docker socket is mounted into the jail and a filtering"
+            echo "  shim is installed at /usr/local/bin/docker.  The shim only permits"
+            echo "  operations against containers whose compose project working_dir"
+            echo "  matches \$(pwd) at launch time.  All host-wide commands"
+            echo "  (run/create/build/network/volume/system/...) are blocked."
+            echo ""
+            echo "  The shim is a soft fence (curl-to-socket bypasses it).  Do not"
+            echo "  treat it as a sandbox primitive."
+            echo ""
+            echo "Compose network auto-attach:"
+            echo "  If a docker compose project is currently running with its"
+            echo "  working_dir equal to \$(pwd), pi-jail also attaches the jail"
+            echo "  container to every network those compose containers are on, so"
+            echo "  pi can reach the services by their compose service name"
+            echo "  (e.g. http://web:3000).  Use -n/--network to attach extra"
+            echo "  networks on top of that."
             exit 0
             ;;
         --)
@@ -65,8 +87,9 @@ while [[ $# -gt 0 ]]; do
             break
             ;;
         *)
-            echo "Warning: Unknown option '$1'" >&2
-            shift
+            echo "Error: Unknown option '$1'" >&2
+            echo "Run '$0 --help' for usage." >&2
+            exit 1
             ;;
     esac
 done
@@ -87,7 +110,6 @@ elif [ "$FORCE_REBUILD" = true ] || [ "$NO_CACHE" = true ]; then
     echo "Forcing rebuild of '$IMAGE_NAME'..."
     NEEDS_BUILD=true
 else
-    # Check if script has changed since last build
     STORED_HASH=$(docker image inspect "$IMAGE_NAME" --format '{{index .Config.Labels "script.hash"}}' 2>/dev/null)
     if [ "$SCRIPT_HASH" != "$STORED_HASH" ]; then
         echo "Script changed since last build. Rebuilding '$IMAGE_NAME'..."
@@ -96,32 +118,32 @@ else
 fi
 
 if [ "$NEEDS_BUILD" = true ]; then
-    BUILD_ARGS=(
-      --build-arg "CUSTOM_APT_PACKAGES=$CUSTOM_APT_PACKAGES"
-      --label "script.hash=$SCRIPT_HASH"
-      -t "$IMAGE_NAME"
-    )
-    if [ "$NO_CACHE" = true ]; then
-        BUILD_ARGS+=(--no-cache)
-    fi
-    docker build "${BUILD_ARGS[@]}" - <<'DOCKERFILE'
+    BUILD_DIR=$(mktemp -d)
+    cat > "$BUILD_DIR/Dockerfile" <<'DOCKERFILE'
 FROM node:lts-bookworm
 
 ARG CUSTOM_APT_PACKAGES
 
-# Install system dependencies, Docker CLI, and custom packages
+# Install base utilities and the docker CLI + compose plugin from Docker's
+# official repo.  We do NOT install docker-ce or containerd - the daemon lives
+# on the host and is reached via the bind-mounted socket.  The real CLI is
+# moved out of $PATH; the shim at /usr/local/bin/docker takes over and
+# filters every command by compose project label.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg build-essential \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce-cli docker-compose-plugin \
     && if [ -n "$CUSTOM_APT_PACKAGES" ]; then \
         apt-get install -y --no-install-recommends $CUSTOM_APT_PACKAGES; \
     fi \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
-    && chmod a+r /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -132,127 +154,342 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Move the real docker binary out of $PATH and install the filtering shim.
+RUN install -d /usr/local/libexec \
+    && mv /usr/bin/docker /usr/local/libexec/docker-real
+
+COPY docker-shim /usr/local/bin/docker
+RUN chmod 0755 /usr/local/bin/docker
+
 # Install pi coding agent globally
 RUN npm install -g @mariozechner/pi-coding-agent
 
 WORKDIR /workspace
 CMD ["pi"]
 DOCKERFILE
+
+    cat > "$BUILD_DIR/docker-shim" <<'SHIM'
+#!/bin/bash
+# pi-jail docker shim
+#
+# Filters access to the host docker daemon so that, from inside the jail, only
+# containers belonging to the compose project rooted at this directory can be
+# inspected, exec'd into, started, stopped, etc.  Host-wide operations
+# (run/create/build/network/volume/system/...) are blocked outright.
+#
+# Scope is computed live from the docker daemon by querying for containers
+# labeled
+#     com.docker.compose.project.working_dir = $PI_JAIL_COMPOSE_WORKDIR
+# (defaulting to the current working directory).  Containers brought up *after*
+# the jail starts are picked up automatically.
+#
+# IMPORTANT: this shim is a soft fence, not a sandbox primitive.  Anything that
+# can talk to /var/run/docker.sock directly (curl, a statically linked docker
+# binary, an MCP server, etc.) bypasses it.  Treat it as a guard rail for an
+# obedient agent, not a security boundary against an adversary.
+
+set -uo pipefail
+
+REAL_DOCKER="/usr/local/libexec/docker-real"
+WORKDIR="${PI_JAIL_COMPOSE_WORKDIR:-$PWD}"
+SHIM_NAME="pi-jail docker shim"
+
+if ! [ -x "$REAL_DOCKER" ]; then
+    echo "$SHIM_NAME: real docker binary missing at $REAL_DOCKER" >&2
+    exit 127
 fi
 
-# ---------------------------------------------------------------------------
-# Docker-in-Docker (DinD): the pi-jail container gets its own completely
-# isolated Docker daemon.  It cannot see host containers, cannot mount the
-# host filesystem, and cannot access the host Docker socket.  The DinD
-# sidecar runs as a separate container and the pi-jail container connects
-# to it over TCP via DOCKER_HOST on a dedicated private network.
-# DinD resources are scoped per launch directory via a directory hash so
-# concurrent sessions in different directories are fully isolated.
-# ---------------------------------------------------------------------------
+deny() {
+    echo "$SHIM_NAME: refusing $*" >&2
+    echo "$SHIM_NAME: scope = compose project working_dir=$WORKDIR" >&2
+    exit 1
+}
 
-# Ensure the dedicated bridge network exists (isolated from the default bridge)
-ensure_dind_network() {
-    if ! docker network inspect "$DIND_NETWORK_NAME" &>/dev/null; then
-        echo "Creating isolated network '$DIND_NETWORK_NAME'..."
-        docker network create --driver bridge "$DIND_NETWORK_NAME" >/dev/null
+allowed_refs() {
+    "$REAL_DOCKER" ps -a \
+        --filter "label=com.docker.compose.project.working_dir=$WORKDIR" \
+        --format '{{.Names}}{{"\t"}}{{.ID}}' 2>/dev/null \
+    | awk -F'\t' 'NF>=2 { print $1; print $2; print substr($2,1,12) }'
+}
+
+_ALLOW_CACHE=""
+get_allow() {
+    if [ -z "$_ALLOW_CACHE" ]; then
+        _ALLOW_CACHE="$(allowed_refs)"
+        if [ -z "$_ALLOW_CACHE" ]; then
+            _ALLOW_CACHE="__none__"
+        fi
+    fi
+    [ "$_ALLOW_CACHE" = "__none__" ] || printf '%s\n' "$_ALLOW_CACHE"
+}
+
+is_allowed_ref() {
+    local target="$1"
+    [ -z "$target" ] && return 1
+    get_allow | grep -qxF "$target"
+}
+
+verify_targets() {
+    local arg ref
+    local found_any=0
+    for arg in "$@"; do
+        case "$arg" in
+            ''|--|-*) continue ;;
+        esac
+        ref="${arg%%:*}"
+        if "$REAL_DOCKER" inspect --type=container "$ref" >/dev/null 2>&1; then
+            found_any=1
+            if ! is_allowed_ref "$ref"; then
+                deny "container '$ref' is out of scope"
+            fi
+        fi
+    done
+    if [ "$found_any" = "0" ]; then
+        deny "no in-scope container found in arguments"
     fi
 }
 
-ensure_dind() {
-    ensure_dind_network
+CMD="${1:-}"
 
-    # If the DinD container is already running, just return its IP on the private network
-    if docker inspect --format '{{.State.Running}}' "$DIND_CONTAINER_NAME" 2>/dev/null | grep -q true; then
-        DIND_IP=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$DIND_NETWORK_NAME\").IPAddress}}" "$DIND_CONTAINER_NAME")
+case "$CMD" in
+    ''|help|--help|-h|version|--version|-v|info)
+        exec "$REAL_DOCKER" "$@"
+        ;;
+esac
+
+case "$CMD" in
+    run|create|pull|push|build|buildx|builder|\
+    image|images|rmi|save|load|import|export|tag|history|\
+    network|volume|system|swarm|node|service|stack|secret|config|plugin|\
+    context|login|logout|trust|search|commit|init|checkpoint)
+        deny "'docker $CMD' is host-wide and not allowed from inside pi-jail"
+        ;;
+esac
+
+if [ "$CMD" = "ps" ]; then
+    shift
+    exec "$REAL_DOCKER" ps \
+        --filter "label=com.docker.compose.project.working_dir=$WORKDIR" "$@"
+fi
+
+if [ "$CMD" = "stats" ]; then
+    shift
+    has_positional=0
+    skip_next=0
+    for arg in "$@"; do
+        if [ "$skip_next" = "1" ]; then skip_next=0; continue; fi
+        case "$arg" in
+            --format|--format=*) [ "$arg" = "--format" ] && skip_next=1 ;;
+            --) continue ;;
+            -*) ;;
+            *) has_positional=1; break ;;
+        esac
+    done
+    if [ "$has_positional" = "0" ]; then
+        ids=$("$REAL_DOCKER" ps -q \
+            --filter "label=com.docker.compose.project.working_dir=$WORKDIR" 2>/dev/null)
+        if [ -z "$ids" ]; then
+            deny "no in-scope containers to stats"
+        fi
+        # shellcheck disable=SC2086
+        exec "$REAL_DOCKER" stats "$@" $ids
+    fi
+    verify_targets "$@"
+    exec "$REAL_DOCKER" stats "$@"
+fi
+
+if [ "$CMD" = "compose" ]; then
+    shift
+    for arg in "$@"; do
+        case "$arg" in
+            -f|--file|-f=*|--file=*|\
+            --project-directory|--project-directory=*|\
+            -p|--project-name|-p=*|--project-name=*|\
+            --env-file|--env-file=*)
+                deny "compose flag '$arg' would escape the project scope"
+                ;;
+        esac
+    done
+    cd "$WORKDIR" 2>/dev/null || true
+    exec "$REAL_DOCKER" compose "$@"
+fi
+
+case "$CMD" in
+    exec|logs|inspect|top|stats|port|diff|\
+    kill|stop|start|restart|pause|unpause|\
+    rename|update|cp|wait|attach|rm)
+        shift
+        verify_targets "$@"
+        exec "$REAL_DOCKER" "$CMD" "$@"
+        ;;
+esac
+
+deny "'docker $CMD' is not recognized by the shim"
+SHIM
+    chmod +x "$BUILD_DIR/docker-shim"
+
+    BUILD_ARGS=(
+      --build-arg "CUSTOM_APT_PACKAGES=$CUSTOM_APT_PACKAGES"
+      --label "script.hash=$SCRIPT_HASH"
+      -t "$IMAGE_NAME"
+    )
+    if [ "$NO_CACHE" = true ]; then
+        BUILD_ARGS+=(--no-cache)
+    fi
+    docker build "${BUILD_ARGS[@]}" "$BUILD_DIR"
+    rm -rf "$BUILD_DIR"
+fi
+
+# ---------------------------------------------------------------------------
+# Compose project detection: enumerate containers belonging to the compose
+# project rooted at $HOST_PWD and attach the jail container to every network
+# those containers are on, so pi can reach services by service name.
+# ---------------------------------------------------------------------------
+
+detect_compose_containers() {
+    docker ps -a \
+        --filter "label=com.docker.compose.project.working_dir=$HOST_PWD" \
+        --format '{{.Names}}' 2>/dev/null
+}
+
+detect_compose_networks() {
+    local cids cid
+    cids=$(docker ps -q --filter "label=com.docker.compose.project.working_dir=$HOST_PWD" 2>/dev/null)
+    if [ -z "$cids" ]; then
         return
     fi
-
-    # Remove stale stopped container if present
-    docker rm -f "$DIND_CONTAINER_NAME" &>/dev/null || true
-
-    echo "Starting Docker-in-Docker daemon ($DIND_CONTAINER_NAME)..."
-    docker run -d --name "$DIND_CONTAINER_NAME" \
-        --network "$DIND_NETWORK_NAME" \
-        --privileged \
-        -v "$HOST_PWD:$HOST_PWD" \
-        -e DOCKER_TLS_CERTDIR="" \
-        "$DIND_IMAGE" \
-        dockerd --host=tcp://0.0.0.0:${DIND_PORT} --tls=false >/dev/null
-
-    # Wait for the DinD daemon to be ready (up to 30s)
-    echo -n "Waiting for DinD daemon..."
-    DIND_IP=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$DIND_NETWORK_NAME\").IPAddress}}" "$DIND_CONTAINER_NAME")
-    for i in $(seq 1 60); do
-        if docker exec "$DIND_CONTAINER_NAME" \
-               wget -qO- "http://127.0.0.1:${DIND_PORT}/_ping" &>/dev/null; then
-            echo " ready."
-            return
-        fi
-        echo -n "."
-        sleep 0.5
-    done
-
-    echo " FAILED"
-    echo "ERROR: DinD daemon did not become ready in time" >&2
-    docker logs "$DIND_CONTAINER_NAME" 2>&1 | tail -10 >&2
-    exit 1
+    for cid in $cids; do
+        docker inspect "$cid" \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
+            2>/dev/null
+    done | awk 'NF && !seen[$0]++'
 }
 
-# Stop and remove the DinD sidecar and network when the pi container exits
-cleanup_dind() {
-    echo "Stopping DinD sidecar..."
-    docker rm -f "$DIND_CONTAINER_NAME" &>/dev/null || true
-    docker network rm "$DIND_NETWORK_NAME" &>/dev/null || true
-}
-trap cleanup_dind EXIT
+mapfile -t COMPOSE_CONTAINERS < <(detect_compose_containers)
+mapfile -t COMPOSE_NETWORKS < <(detect_compose_networks)
 
-ensure_dind
+ALL_NETWORKS=()
+declare -A _seen_net=()
+for net in "${COMPOSE_NETWORKS[@]}" "${EXTRA_NETWORKS[@]}"; do
+    [ -z "$net" ] && continue
+    [ -n "${_seen_net[$net]:-}" ] && continue
+    _seen_net[$net]=1
+    ALL_NETWORKS+=("$net")
+done
+unset _seen_net
 
-if [ -z "$DIND_IP" ]; then
-    echo "ERROR: Could not determine DinD IP" >&2
-    exit 1
+if [ ${#ALL_NETWORKS[@]} -eq 0 ]; then
+    echo "Warning: no running compose project detected for $HOST_PWD" >&2
+    echo "         the jail container will start with only the default bridge network." >&2
+    echo "         Run 'docker compose up -d' first to expose your services to pi," >&2
+    echo "         or pass -n/--network NAME to attach an existing docker network." >&2
+else
+    echo "Attaching jail to networks: ${ALL_NETWORKS[*]}"
 fi
 
-# Build the docker run command.
-# - Runs as the host user's UID:GID so that all mounted host directories are
-#   writable without any ownership mismatch.
-# - The host Docker socket is NEVER mounted.  DOCKER_HOST points to the
-#   isolated DinD daemon over TCP.
-# - ~/.pi/agent is mounted read-write; pi needs to write sessions, settings.
-# - HOME is set explicitly because there is no /etc/passwd entry for an
-#   arbitrary UID; pi uses $HOME to locate ~/.pi/agent.
+if [ ${#COMPOSE_CONTAINERS[@]} -gt 0 ]; then
+    echo "Compose containers in scope: ${COMPOSE_CONTAINERS[*]}"
+fi
+
+# Cleanup: with `docker create --rm` the container auto-removes when
+# `docker start -a` returns, so the trap is only needed to catch the cases
+# where the script fails between `create` and `start`.
+JAIL_CID=""
+cleanup_jail() {
+    if [ -n "$JAIL_CID" ]; then
+        docker rm -f "$JAIL_CID" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_jail EXIT
+
+TTY_FLAGS=(-i)
+if [ -t 0 ] && [ -t 1 ]; then
+    TTY_FLAGS+=(-t)
+fi
+
+# Find the host docker socket and its group so the in-container user can use it.
+HOST_DOCKER_SOCK=""
+for candidate in /var/run/docker.sock /run/docker.sock; do
+    if [ -S "$candidate" ]; then
+        HOST_DOCKER_SOCK="$candidate"
+        break
+    fi
+done
+if [ -z "$HOST_DOCKER_SOCK" ]; then
+    echo "Warning: no docker socket found at /var/run/docker.sock or /run/docker.sock;" >&2
+    echo "         the docker shim inside the jail will fail." >&2
+fi
+DOCKER_SOCK_GID=""
+if [ -n "$HOST_DOCKER_SOCK" ]; then
+    DOCKER_SOCK_GID=$(stat -c '%g' "$HOST_DOCKER_SOCK" 2>/dev/null || true)
+fi
+
 DOCKER_ARGS=(
-  -it --rm
-  --network "$DIND_NETWORK_NAME"
+  "${TTY_FLAGS[@]}" --rm
+  --user "$(id -u):$(id -g)"
+  --cap-drop=ALL
+  --security-opt=no-new-privileges
   --label "hostdir=$HOST_PWD"
-  -u "$(id -u):$(id -g)"
   -v "$HOST_PWD:$HOST_PWD"
   -v "$pi_config:$pi_config"
   -w "$HOST_PWD"
   -e HOME="$HOME"
   -e EDITOR="${EDITOR:-vi}"
-  -e DOCKER_HOST="tcp://${DIND_IP}:${DIND_PORT}"
+  -e "PI_JAIL_COMPOSE_WORKDIR=$HOST_PWD"
 )
 
-# Append user-supplied environment variables
+if [ -n "$HOST_DOCKER_SOCK" ]; then
+    DOCKER_ARGS+=(-v "$HOST_DOCKER_SOCK:/var/run/docker.sock")
+fi
+if [ -n "$DOCKER_SOCK_GID" ]; then
+    DOCKER_ARGS+=(--group-add "$DOCKER_SOCK_GID")
+fi
+
+if [ ${#ALL_NETWORKS[@]} -gt 0 ]; then
+    DOCKER_ARGS+=(--network "${ALL_NETWORKS[0]}")
+fi
+
 for env_var in "${ENV_VARS[@]}"; do
     DOCKER_ARGS+=(-e "$env_var")
 done
 
-# Run the container (no exec — let the EXIT trap fire for cleanup)
-set +e
+# --shell mode: exec into an already-running jail container for this hostdir
 if [ "$SHELL_MODE" = true ]; then
     EXISTING=$(docker ps -q --filter "label=hostdir=$HOST_PWD" --filter "ancestor=$IMAGE_NAME" | head -1)
     if [ -n "$EXISTING" ]; then
-        # Attaching to an already-running container — don't tear down DinD on exit
         trap - EXIT
-        exec docker exec -it "$EXISTING" bash
-    else
-        docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash
+        exec docker exec "${TTY_FLAGS[@]}" "$EXISTING" bash
     fi
-elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
-    docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}"
-else
-    docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME"
 fi
-exit $?
+
+set +e
+if [ "$SHELL_MODE" = true ]; then
+    JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash)
+elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
+    JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}")
+else
+    JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME")
+fi
+CREATE_RC=$?
+set -e
+
+if [ "$CREATE_RC" -ne 0 ] || [ -z "$JAIL_CID" ]; then
+    echo "ERROR: docker create failed (status $CREATE_RC)" >&2
+    exit "${CREATE_RC:-1}"
+fi
+
+for ((i=1; i<${#ALL_NETWORKS[@]}; i++)); do
+    if ! docker network connect "${ALL_NETWORKS[$i]}" "$JAIL_CID" >/dev/null 2>&1; then
+        echo "Warning: failed to attach to network '${ALL_NETWORKS[$i]}'" >&2
+    fi
+done
+
+set +e
+docker start -a -i "$JAIL_CID"
+RUN_RC=$?
+set -e
+
+if [ "${RUN_RC:-0}" -ne 0 ]; then
+    echo "pi container exited with status ${RUN_RC}" >&2
+fi
+exit "${RUN_RC:-0}"

@@ -1,48 +1,57 @@
 # pi-jail
 
-A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@mariozechner/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` only has access to the directory from which `pi-jail` is launched, plus any Docker containers defined within that same directory.
+A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@mariozechner/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` is scoped to the directory it was launched from — plus any `docker compose` project rooted in that same directory.
 
 ## Security model
 
-The pi-jail container is **fully isolated from the host Docker daemon**. Instead of mounting the Docker socket (which grants full host-level access), pi-jail uses **Docker-in-Docker (DinD)**, a completely separate Docker daemon running inside its own container.
+pi-jail mounts the host docker socket into the jail container but replaces the in-container `docker` CLI with a **filtering shim** at `/usr/local/bin/docker`. The shim queries the host daemon live and only permits operations against containers whose compose project `working_dir` label matches the directory from which pi-jail was launched. Host-wide operations (`run`, `create`, `build`, `network`, `volume`, `system`, `image`, …) are blocked outright.
 
-### Why DinD instead of docker-socket-proxy?
+The jail container itself runs with:
 
-A Docker socket proxy (e.g. Tecnativa/docker-socket-proxy) filters by API *endpoint category*, but it cannot restrict what happens *within* allowed endpoints. Since `docker compose` requires both the Containers and POST endpoints, a proxy still allows:
+- `--user $(id -u):$(id -g)` — no root inside the container
+- `--cap-drop=ALL` — all Linux capabilities dropped
+- `--security-opt=no-new-privileges` — no privilege escalation
+- `--group-add` of the host docker socket GID so the unprivileged user can reach the shim-filtered socket
 
-- Creating privileged containers that mount the host root filesystem
-- Inspecting environment variables (secrets, API keys) of all host containers
-- Exec-ing into any container on the host
-
-DinD eliminates all of these vectors by giving the pi-jail container its own isolated daemon with its own container/image/network/volume namespace.
-
-### What DinD prevents
+### What the shim prevents
 
 | Attack vector | Protected? | How |
 |---|---|---|
-| Mount host filesystem via `docker run -v /:/host` | ✅ | DinD's "host" is its own isolated filesystem |
-| Read secrets from other containers | ✅ | Other containers don't exist in the DinD daemon |
-| Exec into other containers | ✅ | Other containers don't exist in the DinD daemon |
-| Create privileged containers | ✅ | Privileged inside DinD is scoped to DinD, not the real host |
-| Access host Docker socket | ✅ | Socket is never mounted into pi-jail |
+| `docker run -v /:/host` on the host daemon | ✅ | `run`/`create` are blocked commands |
+| Listing or exec-ing into unrelated host containers | ✅ | `docker ps` is force-filtered by compose project label; `exec`/`logs`/`inspect` verify every container arg is in scope |
+| Pulling/building arbitrary images | ✅ | `pull`/`push`/`build`/`image`/`save`/`load` blocked |
+| Managing host networks / volumes | ✅ | `network`/`volume`/`system` blocked |
+| `docker compose -f /elsewhere/docker-compose.yml` | ✅ | Compose project-scope-escape flags (`-f`, `-p`, `--project-directory`, `--env-file`) blocked |
 | Tamper with pi credentials | ⚠️ | `~/.pi/agent` is read-write (pi needs to write sessions & locks); protect `auth.json` with `chmod 600` on the host |
 
-### Trade-offs
+### Important caveat: this is a soft fence
 
-- The DinD sidecar requires `--privileged` for its own container (it runs a Docker daemon). This is standard for DinD and does not grant privileges to the pi-jail container.
-- Images pulled inside DinD are stored in the DinD container's filesystem, not the host's image cache. They persist as long as the `pi-jail-dind` container exists.
+The shim is a filter in front of the docker CLI, **not** a sandbox primitive. Anything inside the jail that can talk to `/var/run/docker.sock` directly (a `curl` to the Unix socket, a statically linked docker binary smuggled into the workspace, an MCP server with its own socket client) bypasses the shim entirely. Treat it as a guard rail for an obedient agent, not a boundary against an adversary with arbitrary code execution inside the jail.
+
+If you need true host isolation, stop pi-jail from mounting the socket at all — at which point `docker ps` / `docker exec` from inside the jail no longer work and you lose compose integration.
+
+## Compose integration
+
+When you launch pi-jail from a directory where a `docker compose` project is already running, it:
+
+1. Enumerates every container labeled with `com.docker.compose.project.working_dir=$(pwd)`.
+2. Enumerates every docker network those containers are attached to.
+3. Attaches the jail container to each of those networks (via `--network` at create time plus `docker network connect` for any extras).
+
+The upshot: from inside the jail, `pi` can reach your compose services by service name (`curl http://web:3000`, `psql -h db`, …) and can `docker exec`/`docker logs` them via the shim.
+
+Use `-n/--network NAME` to attach the jail to additional networks beyond the auto-detected set.
 
 ## How it works
 
-On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi` and common CLI tools pre-installed). It also starts a `pi-jail-dind` sidecar container running an isolated Docker daemon. Subsequent runs reuse both. If you edit the script — for example to add packages — the image is automatically rebuilt via `md5sum` change detection.
+On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi`, `gh`, and common CLI tools pre-installed) and bakes the docker shim in at `/usr/local/bin/docker`. Subsequent runs reuse the image. If you edit the script, the image is automatically rebuilt via `md5sum` change detection.
 
 ## Prerequisites
 
-- Docker installed and running
+- Docker installed and running on the host
+- Your project's `docker compose up -d` already running in the directory you launch pi-jail from (optional, but required for service-name networking and compose-scoped docker access)
 
 ## Installation
-
-Copy the script to somewhere on your `$PATH` and make it executable:
 
 ```bash
 cp pi-jail ~/.local/bin/pi-jail
@@ -55,10 +64,12 @@ chmod +x ~/.local/bin/pi-jail
 pi-jail [OPTIONS] [-- ARGS...]
 
 Options:
-  -e, --env KEY=VAL   Pass an environment variable to the container (repeatable)
-  -r, --rebuild       Force rebuild of the Docker image
-  -s, --shell         Start a bash shell instead of pi
-  -h, --help          Show this help message
+  -e, --env KEY=VAL    Pass an environment variable to the container (repeatable)
+  -n, --network NAME   Attach the jail container to an extra docker network (repeatable)
+  -r, --rebuild        Force rebuild of the Docker image
+      --no-cache       Rebuild without using Docker cache
+  -s, --shell          Start a bash shell instead of pi
+  -h, --help           Show this help message
 
 Arguments after -- are passed through to pi.
 ```
@@ -75,8 +86,8 @@ pi-jail -- -p "Summarize this codebase"
 # Pass environment variables into the container
 pi-jail -e ANTHROPIC_API_KEY=sk-ant-... -e MY_VAR=hello
 
-# Combine env vars with pi arguments
-pi-jail -e ANTHROPIC_API_KEY=sk-ant-... -- -p "Summarize this codebase"
+# Attach to an extra docker network on top of any auto-detected compose networks
+pi-jail -n my-other-stack_default
 
 # Open a shell inside the container
 pi-jail --shell
@@ -85,15 +96,13 @@ pi-jail --shell
 pi-jail --rebuild
 ```
 
-If `--shell` is used while a container from the same working directory is already running, the script `docker exec`s into it rather than starting a new one.
+If `--shell` is used while a jail container for the same working directory is already running, the script `docker exec`s into it rather than starting a new one.
 
 ## Configuration
 
 ### API keys
 
 `~/.pi/agent` is mounted into the container at the same path, so credentials written there are available on every run without setting environment variables.
-
-For example, to configure OpenRouter:
 
 ```bash
 mkdir -p ~/.pi/agent
@@ -105,103 +114,82 @@ See the pi docs for [all providers and auth file format](https://github.com/badl
 
 ### Adding packages
 
-To install extra packages into the image, edit the `CUSTOM_APT_PACKAGES` variable near the top of the script:
+Edit `CUSTOM_APT_PACKAGES` near the top of the script:
 
 ```bash
-CUSTOM_APT_PACKAGES="jq git tmux sqlite3"
+CUSTOM_APT_PACKAGES="jq git vim tmux sqlite3"
 ```
 
-Save the file and the image will rebuild automatically on the next run.
+The image rebuilds automatically on the next run.
 
 ## Volume mounts
 
 | Host | Container | Mode | Purpose |
 |---|---|---|---|
-| `$(pwd)` | same path | read-write | Current working directory (path-mirrored for Docker compose compatibility) |
+| `$(pwd)` | same path | read-write | Current working directory (path-mirrored for `docker compose` compatibility) |
 | `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, skills, auth |
+| `/var/run/docker.sock` | `/var/run/docker.sock` | read-write | Host docker socket, filtered by the in-container shim |
 
-The Docker socket (`/var/run/docker.sock`) is **not** mounted into the pi-jail container. Docker access is provided via `DOCKER_HOST=tcp://<dind-ip>:2375` pointing to the isolated `pi-jail-dind` sidecar daemon.
-
-All paths are mounted at their exact host paths. The container runs as the host user's UID/GID (`-u $(id -u):$(id -g)`) so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
-
-## DinD sidecar management
-
-The DinD daemon runs as a long-lived container named `pi-jail-dind`. It starts automatically on the first `pi-jail` invocation and restarts unless stopped.
-
-```bash
-# Check DinD status
-docker ps --filter name=pi-jail-dind
-
-# Stop the DinD daemon
-docker stop pi-jail-dind
-
-# Remove the DinD daemon (also removes all images/containers inside it)
-docker rm -f pi-jail-dind
-```
+All paths are mounted at their exact host paths. The container runs as the host user's UID/GID so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
 
 ## Included tools
 
-The Docker image ships with these CLI tools alongside `pi`:
+The image ships with these CLI tools alongside `pi`:
 
 - `git` — version control
 - `jq` — JSON processor
+- `vim` — editor
 - `gh` — GitHub CLI
-- `docker` CLI and `docker compose` plugin
+- `docker` CLI (shim-filtered) and `docker compose` plugin
 - `curl`, `gnupg`, `build-essential`
 
-## Testing Docker access
+## Testing compose integration
 
-A `docker-compose.yml` is included to verify that `pi-jail` can reach Docker containers defined in the same directory. It runs two automated tests:
+A `docker-compose.yml` is included to verify that `pi-jail` can reach and manage compose services from inside the jail. Bring the stack up on the **host** first:
 
-1. **Volume mount** — confirms that `docker-compose.yml` is visible inside the container via the workspace volume mount.
-2. **Service networking** — confirms that the `docker-access-test` container can reach the `test-web` service over the compose network.
+```bash
+docker compose up -d
+```
 
-Open a shell inside the `pi-jail` container from the `pi-jail` directory:
+Then launch a shell in pi-jail:
 
 ```bash
 pi-jail --shell
 ```
 
-From inside the container, run the tests:
+You should see a line like:
+
+```
+Attaching jail to networks: pi-jail_default
+Compose containers in scope: jail-test-web jail-docker-access-test
+```
+
+Inside the shell, verify compose-scoped docker access works:
 
 ```bash
-docker compose up --abort-on-container-exit --exit-code-from docker-access-test
+# ps is force-scoped to the project label — only compose services are visible
+docker ps
+
+# exec/logs work against in-scope containers
+docker logs jail-docker-access-test
+docker exec jail-test-web wget -qO- http://127.0.0.1:8080
+
+# service-name networking works via the attached compose network
+wget -qO- http://test-web:8080
+# => OK
+
+# host-wide commands are blocked by the shim
+docker run --rm alpine sh
+# => pi-jail docker shim: refusing 'docker run' is host-wide and not allowed...
+
+docker image ls
+# => pi-jail docker shim: refusing 'docker image' is host-wide and not allowed...
 ```
 
-Expected output:
-
-```
-=== DinD Docker Compose Test ===
-
---- Test 1: Volume mount (project files visible) ---
-[PASS] docker-compose.yml found via volume mount
-
---- Test 2: Compose service networking ---
-[PASS] Got response from test-web: OK
-```
-
-Both services exit cleanly when all tests pass. Tear down afterward:
+Tear down afterward from the host:
 
 ```bash
 docker compose down
-```
-
-### Verifying isolation
-
-From inside the pi-jail container, confirm that the host is not accessible:
-
-```bash
-# No Docker socket — should fail
-ls -la /var/run/docker.sock
-# => ls: cannot access '/var/run/docker.sock': No such file or directory
-
-# Only compose containers visible — no host containers
-docker ps -a
-# => (only your compose services)
-
-# Cannot see host filesystem even through Docker
-docker run --rm -v /:/host alpine cat /host/etc/hostname
-# => (shows DinD hostname, not host machine hostname)
 ```
 
 ## License
