@@ -1,6 +1,6 @@
 # pi-jail
 
-A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@mariozechner/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` is scoped to the directory it was launched from — plus any `docker compose` project rooted in that same directory.
+A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@earendil-works/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` is scoped to the directory it was launched from — plus any `docker compose` project rooted in that same directory.
 
 ## Security model
 

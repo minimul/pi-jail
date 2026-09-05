@@ -162,7 +162,7 @@ COPY docker-shim /usr/local/bin/docker
 RUN chmod 0755 /usr/local/bin/docker
 
 # Install pi coding agent globally
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g @earendil-works/pi-coding-agent
 
 WORKDIR /workspace
 CMD ["pi"]
