@@ -161,11 +161,15 @@ RUN install -d /usr/local/libexec \
 COPY docker-shim /usr/local/bin/docker
 RUN chmod 0755 /usr/local/bin/docker
 
-# Install pi coding agent globally
-RUN npm install -g @earendil-works/pi-coding-agent
+# Install pi coding agent globally and retain its bundled Vim-like modal editor
+# at a stable path outside npm's versioned package tree.
+RUN npm install -g @earendil-works/pi-coding-agent \
+    && install -d /usr/local/share/pi-jail/extensions \
+    && cp "$(npm root -g)/@earendil-works/pi-coding-agent/examples/extensions/modal-editor.ts" \
+        /usr/local/share/pi-jail/extensions/modal-editor.ts
 
 WORKDIR /workspace
-CMD ["pi"]
+CMD ["pi", "--extension", "/usr/local/share/pi-jail/extensions/modal-editor.ts"]
 DOCKERFILE
 
     cat > "$BUILD_DIR/docker-shim" <<'SHIM'
@@ -466,7 +470,9 @@ set +e
 if [ "$SHELL_MODE" = true ]; then
     JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash)
 elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
-    JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" pi "${PASSTHROUGH_ARGS[@]}")
+    JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" \
+        pi --extension /usr/local/share/pi-jail/extensions/modal-editor.ts \
+        "${PASSTHROUGH_ARGS[@]}")
 else
     JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME")
 fi

@@ -44,7 +44,7 @@ Use `-n/--network NAME` to attach the jail to additional networks beyond the aut
 
 ## How it works
 
-On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi`, `gh`, and common CLI tools pre-installed) and bakes the docker shim in at `/usr/local/bin/docker`. Subsequent runs reuse the image. If you edit the script, the image is automatically rebuilt via `md5sum` change detection.
+On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi`, `gh`, and common CLI tools pre-installed) and bakes the docker shim in at `/usr/local/bin/docker`. Pi's bundled Vim-like modal editor extension is copied to a stable image path and loaded automatically. Subsequent runs reuse the image. If you edit the script, the image is automatically rebuilt via `md5sum` change detection.
 
 ## Prerequisites
 
@@ -98,6 +98,19 @@ pi-jail --rebuild
 
 If `--shell` is used while a jail container for the same working directory is already running, the script `docker exec`s into it rather than starting a new one.
 
+### Vim-like prompt editing
+
+The inline prompt editor loads pi's bundled modal editor extension automatically:
+
+- `Esc` switches from insert mode to normal mode
+- `i` switches to insert mode
+- `a` moves right and switches to insert mode
+- `h`, `j`, `k`, `l` move in normal mode
+- `0` and `$` move to the start and end of the line
+- `x` deletes the character under the cursor
+
+Pressing `Esc` while already in normal mode retains pi's normal abort behavior. This is a lightweight Vim-like editor, not a complete Vim implementation.
+
 ## Configuration
 
 ### API keys
@@ -138,7 +151,8 @@ The image ships with these CLI tools alongside `pi`:
 
 - `git` — version control
 - `jq` — JSON processor
-- `vim` — editor
+- `vim` — external editor
+- Pi's bundled Vim-like modal editor extension — inline prompt editing
 - `gh` — GitHub CLI
 - `docker` CLI (shim-filtered) and `docker compose` plugin
 - `curl`, `gnupg`, `build-essential`
