@@ -120,7 +120,7 @@ fi
 if [ "$NEEDS_BUILD" = true ]; then
     BUILD_DIR=$(mktemp -d)
     cat > "$BUILD_DIR/Dockerfile" <<'DOCKERFILE'
-FROM node:lts-bookworm
+FROM node:lts-trixie
 
 ARG CUSTOM_APT_PACKAGES
 
@@ -136,7 +136,7 @@ RUN apt-get update \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
         | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && chmod a+r /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian trixie stable" \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -438,7 +438,7 @@ DOCKER_ARGS=(
   -v "$pi_config:$pi_config"
   -w "$HOST_PWD"
   -e HOME="$HOME"
-  -e EDITOR="${EDITOR:-vi}"
+  -e EDITOR="vim"
   -e "PI_JAIL_COMPOSE_WORKDIR=$HOST_PWD"
 )
 
