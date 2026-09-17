@@ -140,7 +140,8 @@ The image rebuilds automatically on the next run.
 | Host | Container | Mode | Purpose |
 |---|---|---|---|
 | `$(pwd)` | same path | read-write | Current working directory (path-mirrored for `docker compose` compatibility) |
-| `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, skills, auth |
+| `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, auth |
+| `~/oss/minimul-skills` | `~/.pi/agent/skills` | read-write | Shared host skills directory |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | read-write | Host docker socket, filtered by the in-container shim |
 
 All paths are mounted at their exact host paths. The container runs as the host user's UID/GID so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.

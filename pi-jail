@@ -96,7 +96,18 @@ done
 
 # Create pi data directories
 pi_config="$HOME/.pi/agent"
+pi_skills_source="$HOME/oss/minimul-skills"
 mkdir -p "$pi_config"
+if [ ! -d "$pi_skills_source" ]; then
+    echo "Error: skills directory not found: $pi_skills_source" >&2
+    exit 1
+fi
+# Ensure the nested bind mount target is a real directory. Preserve any
+# pre-existing skills symlink (for example one pointing at Claude skills).
+if [ -L "$pi_config/skills" ]; then
+    mv "$pi_config/skills" "$pi_config/skills.symlink-backup"
+fi
+mkdir -p "$pi_config/skills"
 
 # Compute hash of this script to detect changes
 SCRIPT_HASH=$(md5sum "$SCRIPT_PATH" | cut -d' ' -f1)
@@ -436,6 +447,7 @@ DOCKER_ARGS=(
   --label "hostdir=$HOST_PWD"
   -v "$HOST_PWD:$HOST_PWD"
   -v "$pi_config:$pi_config"
+  -v "$pi_skills_source:$pi_config/skills"
   -w "$HOST_PWD"
   -e HOME="$HOME"
   -e EDITOR="vim"
