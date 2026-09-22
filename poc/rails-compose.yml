@@ -1,0 +1,88 @@
+# Development stack for the POC's Rails apps: rails, db, redis, sidekiq,
+# good_job and a Playwright browser.  It uses what is worth checking under
+# rootless Docker: image builds, bind mounts, named volumes, localhost-bound
+# ports, a healthcheck, shm_size and a memory limit.
+services:
+  rails: &rails
+    build:
+      context: ./
+      dockerfile: Dockerfile-dev
+    volumes:
+      - .:/rails
+      - bundle:/usr/local/bundle
+    ports:
+      - "${RAILS_HOST:-127.0.0.1}:${RAILS_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      - HISTFILE=/rails/log/.bash_history
+      - RAILS_ENV=${RAILS_ENV:-development}
+      - GOOD_JOB_MAX_THREADS=${GOOD_JOB_MAX_THREADS:-3}
+    depends_on:
+    - db
+    - redis
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: ${LOG_MAX_FILE:-3}
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile-dev-postgres
+    # /dev/shm for PostgreSQL dynamic shared memory; the 64MB default is too small.
+    shm_size: 2gb
+    environment:
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql
+    command:
+      - "postgres"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "shared_buffers=1792MB"
+      - "-c"
+      - "effective_cache_size=3GB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:8.2
+  sidekiq:
+    <<: *rails
+    entrypoint: []
+    command: bundle exec sidekiq -e development -C config/sidekiq.yml
+    ports: []
+  good_job:
+    <<: *rails
+    entrypoint: []
+    command: bundle exec good_job start
+    ports: []
+  playwright:
+    image: jacoblincool/playwright:chromium-server-1.55.0
+    shm_size: 2gb        # Chromium IPC; default 64MB is too small
+    mem_limit: 4gb       # hard cap
+    mem_reservation: 2gb # soft reservation under memory pressure
+    memswap_limit: 4gb   # = mem_limit → disables container swap
+    ports:
+      - "${DEVTOOLS_HOST:-127.0.0.1}:${DEVTOOLS_PORT:-9222}:9223"
+    environment:
+      - BROWSER_ARGS=--remote-debugging-port=9222
+    # Chrome DevTools only listens on 127.0.0.1:9222; socat relays 0.0.0.0:9223
+    # to it so the published port can reach it.
+    entrypoint: ["/bin/sh", "-c", "apt-get update -qq && apt-get install -y -qq socat > /dev/null 2>&1; socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222 & node index.mjs"]
+
+volumes:
+  bundle:
+  pg_data:

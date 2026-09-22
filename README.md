@@ -1,17 +1,16 @@
 # pi-jail
 
-A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@earendil-works/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` is scoped to the directory it was launched from — plus any `docker compose` project rooted in that same directory.
+A single-file Bash launcher that runs the [`pi`](https://github.com/badlogic/pi-mono) coding agent CLI (`@earendil-works/pi-coding-agent`) inside a Docker sandbox. Node.js and npm dependencies stay off your host machine, and `pi` is scoped to the directory it was launched from — plus any `docker compose` project rooted in that same directory. It is built for **rootless Docker**: the daemon, the jail and everything `pi` can reach run as your own user, never as root.
 
 ## Security model
 
-pi-jail mounts the host docker socket into the jail container but replaces the in-container `docker` CLI with a **filtering shim** at `/usr/local/bin/docker`. The shim queries the host daemon live and only permits operations against containers whose compose project `working_dir` label matches the directory from which pi-jail was launched. Host-wide operations (`run`, `create`, `build`, `network`, `volume`, `system`, `image`, …) are blocked outright.
+pi-jail requires a **rootless** Docker daemon (see [Rootless docker](#rootless-docker)). It mounts the socket of your active docker context into the jail container and replaces the in-container `docker` CLI with a **filtering shim** at `/usr/local/bin/docker`. The shim queries the daemon live and only permits operations against containers whose compose project `working_dir` label matches the directory from which pi-jail was launched. Host-wide operations (`run`, `create`, `build`, `network`, `volume`, `system`, `image`, …) are blocked outright.
 
 The jail container itself runs with:
 
-- `--user $(id -u):$(id -g)` — no root inside the container
-- `--cap-drop=ALL` — all Linux capabilities dropped
+- a rootless daemon — every process `pi` starts is your uid on the host, including "root" inside the container (`/proc/self/uid_map` in the jail reads `0 <your uid> 1`)
+- `--cap-drop=ALL` — all Linux capabilities dropped, so that in-container root cannot chown, setuid, or bypass file modes
 - `--security-opt=no-new-privileges` — no privilege escalation
-- `--group-add` of the host docker socket GID so the unprivileged user can reach the shim-filtered socket
 
 ### What the shim prevents
 
@@ -28,7 +27,31 @@ The jail container itself runs with:
 
 The shim is a filter in front of the docker CLI, **not** a sandbox primitive. Anything inside the jail that can talk to `/var/run/docker.sock` directly (a `curl` to the Unix socket, a statically linked docker binary smuggled into the workspace, an MCP server with its own socket client) bypasses the shim entirely. Treat it as a guard rail for an obedient agent, not a boundary against an adversary with arbitrary code execution inside the jail.
 
+Rootless Docker bounds what such a bypass can do. The daemon runs as your user inside a user namespace, so the classic `docker run -v /:/host` escalation yields your own permissions, never root. A bypass can still reach your other rootless containers and any file you can read, which is why pi-jail refuses rootful daemons by default: there the same bypass would be root on the host.
+
 If you need true host isolation, stop pi-jail from mounting the socket at all — at which point `docker ps` / `docker exec` from inside the jail no longer work and you lose compose integration.
+
+## Rootless docker
+
+pi-jail refuses to start against a rootful (root-owned) daemon unless you pass `--allow-rootful`, because the mounted socket would be a root-equivalent handle to the host. One-time host setup on Ubuntu 24.04 with Docker CE already installed from Docker's apt repo:
+
+```bash
+sudo apt-get install -y docker-ce-rootless-extras uidmap dbus-user-session slirp4netns
+sudo systemctl disable --now docker.service docker.socket   # recommended: no root daemon at all
+dockerd-rootless-setuptool.sh install        # add --force if you keep the rootful socket around
+sudo loginctl enable-linger "$USER"
+docker context use rootless
+docker info --format '{{join .SecurityOptions ","}}'        # must include name=rootless
+sudo gpasswd -d "$USER" docker               # docker-group membership is root; you no longer need it
+```
+
+- The daemon socket is `$XDG_RUNTIME_DIR/docker.sock`. pi-jail follows `DOCKER_HOST` or the active docker context, so run `docker compose up -d` in that same context or the jail will not see your stack.
+- Images live in `~/.local/share/docker`; the `pi-jail` image is rebuilt there automatically on first run.
+- Inside the jail `id -u` prints 0, but that root is you: files `pi` writes are owned by your user on the host.
+- Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor. Ubuntu's `apparmor` package already ships `/etc/apparmor.d/rootlesskit` for `/usr/bin/rootlesskit`; only a rootlesskit installed elsewhere (for example the tarball install into `~/bin`) needs the profile from Docker's rootless troubleshooting page.
+- Compose projects that publish ports below 1024 need `net.ipv4.ip_unprivileged_port_start=0`. `mem_limit`/`cpus` need cgroup delegation (`Delegate=cpu cpuset io memory pids` in `/etc/systemd/system/user@.service.d/delegate.conf`). Services running as a non-root uid that write into bind mounts leave files owned by a subordinate uid.
+
+A complete, tested setup lives in [`poc/`](poc/README.md): an Incus VM with rootless Docker, two Rails compose stacks and acceptance tests for the scoping and no-root guarantees.
 
 ## Compose integration
 
@@ -48,7 +71,7 @@ On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.
 
 ## Prerequisites
 
-- Docker installed and running on the host
+- Docker running in **rootless mode** on the host (see [Rootless docker](#rootless-docker)); a rootful daemon works only with `--allow-rootful`
 - Your project's `docker compose up -d` already running in the directory you launch pi-jail from (optional, but required for service-name networking and compose-scoped docker access)
 
 ## Installation
@@ -69,6 +92,7 @@ Options:
   -r, --rebuild        Force rebuild of the Docker image
       --no-cache       Rebuild without using Docker cache
   -s, --shell          Start a bash shell instead of pi
+      --allow-rootful  Permit a rootful (root-owned) docker daemon
   -h, --help           Show this help message
 
 Arguments after -- are passed through to pi.
@@ -142,9 +166,9 @@ The image rebuilds automatically on the next run.
 | `$(pwd)` | same path | read-write | Current working directory (path-mirrored for `docker compose` compatibility) |
 | `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, auth |
 | `~/oss/minimul-skills` | `~/.pi/agent/skills` | read-write | Shared host skills directory |
-| `/var/run/docker.sock` | `/var/run/docker.sock` | read-write | Host docker socket, filtered by the in-container shim |
+| active context socket, e.g. `/run/user/1000/docker.sock` | `/var/run/docker.sock` | read-write | Rootless daemon socket, filtered by the in-container shim |
 
-All paths are mounted at their exact host paths. The container runs as the host user's UID/GID so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
+All paths are mounted at their exact host paths. Under rootless Docker the container runs as uid 0, which the daemon's user namespace maps to your host uid, so mounted directories are always writable and files `pi` creates are owned by you. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent`.
 
 ## Included tools
 
@@ -160,7 +184,7 @@ The image ships with these CLI tools alongside `pi`:
 
 ## Testing compose integration
 
-A `docker-compose.yml` is included to verify that `pi-jail` can reach and manage compose services from inside the jail. Bring the stack up on the **host** first:
+A `docker-compose.yml` is included to verify that `pi-jail` can reach and manage compose services from inside the jail. Bring the stack up on the **host**, in the rootless docker context, first:
 
 ```bash
 docker compose up -d
