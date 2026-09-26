@@ -16,7 +16,7 @@ EXTRA_NETWORKS=()
 # ============================================
 # Custom apt packages to install (space-separated)
 # Modify this line to add your own packages
-CUSTOM_APT_PACKAGES="jq git vim"
+CUSTOM_APT_PACKAGES="jq git vim fd-find ripgrep"
 # ============================================
 
 # Parse command line arguments
@@ -215,7 +215,8 @@ RUN apt-get update \
     && if [ -n "$CUSTOM_APT_PACKAGES" ]; then \
         apt-get install -y --no-install-recommends $CUSTOM_APT_PACKAGES; \
     fi \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && { [ -x /usr/bin/fdfind ] && ln -sf /usr/bin/fdfind /usr/local/bin/fd || true; }
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

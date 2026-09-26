@@ -154,7 +154,7 @@ See the pi docs for [all providers and auth file format](https://github.com/badl
 Edit `CUSTOM_APT_PACKAGES` near the top of the script:
 
 ```bash
-CUSTOM_APT_PACKAGES="jq git vim tmux sqlite3"
+CUSTOM_APT_PACKAGES="jq git vim fd-find ripgrep tmux sqlite3"
 ```
 
 The image rebuilds automatically on the next run.
@@ -177,6 +177,7 @@ The image ships with these CLI tools alongside `pi`:
 - `git` — version control
 - `jq` — JSON processor
 - `vim` — external editor
+- `fdfind` (also as `fd`) and `rg` — fast file and content search
 - Pi's bundled Vim-like modal editor extension — inline prompt editing
 - `gh` — GitHub CLI
 - `docker` CLI (shim-filtered) and `docker compose` plugin
