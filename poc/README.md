@@ -9,6 +9,27 @@ Builds a throwaway Ubuntu 24.04 VM that proves the rootless conversion end to en
 5. `www/demo-3000` and `www/demo-3001` are Rails apps using `poc/rails-compose.yml` as their `compose.yml` (rails, db, redis, sidekiq, good_job, playwright), on host ports 3000 and 3001.
 6. A pi-jail started in `demo-3000` can only see and manage `demo-3000-*` containers; `demo-3001` is refused by the shim and is not on the jail's network.
 7. Nothing that originates from pi-jail can run as root: in the jail `uid_map` reads `0 1000 1`, capabilities are empty, and a deliberate shim bypass that mounts `/` still cannot read `/etc/shadow` or write `/root`.
+8. pi-jail can edit the code it was launched on: files it creates or changes in the launch directory land on the VM owned by the unprivileged user, and the other app's source tree is not mounted into the jail at all.
+
+## Testing a real application
+
+The checks read the container names, host ports and service list from compose
+itself, so they are not tied to the generated apps. Point them at any two
+compose projects:
+
+```bash
+POC_APP_A=~/www/myapp-3000 POC_APP_B=~/www/myapp-3001 poc/test.sh
+```
+
+Under rootless Docker a dev image whose `Dockerfile` switches to a non-root
+uid cannot write its own bind-mounted tree. Keep it working under both daemons
+with a compose override that defaults to the image's user:
+
+```yaml
+    # Rootless: set RUN_AS_USER=0:0 in .env (container root is your host user).
+    # Unset or empty keeps the image default.
+    user: "${RUN_AS_USER:-}"
+```
 
 ## Run it (on the host)
 
@@ -40,7 +61,7 @@ cat /proc/self/uid_map          # 0 1000 1  → "root" here is minimul
 | `provision-root.sh` | VM root | docker-ce + `docker-ce-rootless-extras`, disable rootful daemon, create `minimul`, subuid/subgid, cgroup delegation, an AppArmor userns profile for rootlesskit if the distro did not ship one, `loginctl enable-linger` |
 | `provision-user.sh` | VM minimul | `dockerd-rootless-setuptool.sh install`, `docker context use rootless`, install pi-jail, generate both apps, `compose build/run/up`, build the pi-jail image |
 | `make-rails-app.sh` | VM minimul | `rails new` inside a rootless container, plus the files `rails-compose.yml` expects (`.env`, `Dockerfile-dev`, `Dockerfile-dev-postgres`, `config/sidekiq.yml`, entrypoint) |
-| `test.sh` | VM minimul | acceptance checks for requirements 1–7, one `PASS`/`FAIL`/`LIMIT` line each |
+| `test.sh` | VM minimul | acceptance checks for requirements 1–8, one `PASS`/`FAIL`/`LIMIT` line each (`POC_APP_A`/`POC_APP_B` retarget it) |
 
 ## Reading the test output
 
