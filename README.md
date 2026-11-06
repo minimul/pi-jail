@@ -44,7 +44,7 @@ Use `-n/--network NAME` to attach the jail to additional networks beyond the aut
 
 ## How it works
 
-On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Bookworm with `pi`, `gh`, and common CLI tools pre-installed) and bakes the docker shim in at `/usr/local/bin/docker`. Pi's bundled Vim-like modal editor extension is copied to a stable image path and loaded automatically. Subsequent runs reuse the image. If you edit the script, the image is automatically rebuilt via `md5sum` change detection.
+On first run, `pi-jail` builds a Docker image from an embedded Dockerfile (Node.js LTS on Debian Trixie with `pi`, `gh`, and common CLI tools pre-installed) and bakes the docker shim in at `/usr/local/bin/docker`. Subsequent runs reuse the image. If you edit the script, the image is automatically rebuilt via `md5sum` change detection.
 
 ## Prerequisites
 
@@ -98,19 +98,6 @@ pi-jail --rebuild
 
 If `--shell` is used while a jail container for the same working directory is already running, the script `docker exec`s into it rather than starting a new one.
 
-### Vim-like prompt editing
-
-The inline prompt editor loads pi's bundled modal editor extension automatically:
-
-- `Esc` switches from insert mode to normal mode
-- `i` switches to insert mode
-- `a` moves right and switches to insert mode
-- `h`, `j`, `k`, `l` move in normal mode
-- `0` and `$` move to the start and end of the line
-- `x` deletes the character under the cursor
-
-Pressing `Esc` while already in normal mode retains pi's normal abort behavior. This is a lightweight Vim-like editor, not a complete Vim implementation.
-
 ## Configuration
 
 ### API keys
@@ -141,10 +128,11 @@ The image rebuilds automatically on the next run.
 |---|---|---|---|
 | `$(pwd)` | same path | read-write | Current working directory (path-mirrored for `docker compose` compatibility) |
 | `~/.pi/agent` | same path | read-write | pi configuration, sessions, extensions, auth |
+| `~/.npm` | same path | read-write | npm cache used when installing pi extensions and packages |
 | `~/oss/minimul-skills` | `~/.pi/agent/skills` | read-write | Shared host skills directory |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | read-write | Host docker socket, filtered by the in-container shim |
 
-All paths are mounted at their exact host paths. The container runs as the host user's UID/GID so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry.
+All paths are mounted at their exact host paths. The container runs as the host user's UID/GID so mounted directories are always writable with no ownership mismatch. `HOME` is passed in explicitly so `pi` can locate `~/.pi/agent` without a matching `/etc/passwd` entry. The npm cache is mounted explicitly because the path-mirrored home directory itself is not writable inside the container; this allows commands such as `pi install npm:pi-vim-editor` to create cache files normally.
 
 ## Included tools
 
@@ -153,7 +141,6 @@ The image ships with these CLI tools alongside `pi`:
 - `git` — version control
 - `jq` — JSON processor
 - `vim` — external editor
-- Pi's bundled Vim-like modal editor extension — inline prompt editing
 - `gh` — GitHub CLI
 - `docker` CLI (shim-filtered) and `docker compose` plugin
 - `curl`, `gnupg`, `build-essential`

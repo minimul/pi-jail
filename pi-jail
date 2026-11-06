@@ -15,7 +15,7 @@ EXTRA_NETWORKS=()
 # ============================================
 # Custom apt packages to install (space-separated)
 # Modify this line to add your own packages
-CUSTOM_APT_PACKAGES="jq git vim"
+CUSTOM_APT_PACKAGES="jq git vim shellcheck"
 # ============================================
 
 # Parse command line arguments
@@ -97,7 +97,8 @@ done
 # Create pi data directories
 pi_config="$HOME/.pi/agent"
 pi_skills_source="$HOME/oss/minimul-skills"
-mkdir -p "$pi_config"
+npm_cache="$HOME/.npm"
+mkdir -p "$pi_config" "$npm_cache"
 if [ ! -d "$pi_skills_source" ]; then
     echo "Error: skills directory not found: $pi_skills_source" >&2
     exit 1
@@ -172,15 +173,11 @@ RUN install -d /usr/local/libexec \
 COPY docker-shim /usr/local/bin/docker
 RUN chmod 0755 /usr/local/bin/docker
 
-# Install pi coding agent globally and retain its bundled Vim-like modal editor
-# at a stable path outside npm's versioned package tree.
-RUN npm install -g @earendil-works/pi-coding-agent \
-    && install -d /usr/local/share/pi-jail/extensions \
-    && cp "$(npm root -g)/@earendil-works/pi-coding-agent/examples/extensions/modal-editor.ts" \
-        /usr/local/share/pi-jail/extensions/modal-editor.ts
+# Install pi coding agent globally.
+RUN npm install -g @earendil-works/pi-coding-agent
 
 WORKDIR /workspace
-CMD ["pi", "--extension", "/usr/local/share/pi-jail/extensions/modal-editor.ts"]
+CMD ["pi"]
 DOCKERFILE
 
     cat > "$BUILD_DIR/docker-shim" <<'SHIM'
@@ -448,6 +445,7 @@ DOCKER_ARGS=(
   -v "$HOST_PWD:$HOST_PWD"
   -v "$pi_config:$pi_config"
   -v "$pi_skills_source:$pi_config/skills"
+  -v "$npm_cache:$npm_cache"
   -w "$HOST_PWD"
   -e HOME="$HOME"
   -e EDITOR="vim"
@@ -483,8 +481,7 @@ if [ "$SHELL_MODE" = true ]; then
     JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash)
 elif [ ${#PASSTHROUGH_ARGS[@]} -gt 0 ]; then
     JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME" \
-        pi --extension /usr/local/share/pi-jail/extensions/modal-editor.ts \
-        "${PASSTHROUGH_ARGS[@]}")
+        pi "${PASSTHROUGH_ARGS[@]}")
 else
     JAIL_CID=$(docker create "${DOCKER_ARGS[@]}" "$IMAGE_NAME")
 fi
