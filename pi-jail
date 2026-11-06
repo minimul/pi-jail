@@ -173,8 +173,11 @@ RUN install -d /usr/local/libexec \
 COPY docker-shim /usr/local/bin/docker
 RUN chmod 0755 /usr/local/bin/docker
 
-# Install pi coding agent globally.
-RUN npm install -g @earendil-works/pi-coding-agent
+# Install pi coding agent and default extensions globally.
+RUN npm install -g \
+    @earendil-works/pi-coding-agent \
+    @zigai/pi-prompt-history \
+    pi-vimmode
 
 WORKDIR /workspace
 CMD ["pi"]
